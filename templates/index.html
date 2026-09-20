@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Tracker</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2027; --panel2: #23272f;
+    --line: #313743; --text: #e6e9ef; --muted: #8b93a3;
+    --accent: #6ea8fe; --danger: #e06c75;
+    --w1:#e06c75; --w2:#e5a15a; --w3:#e5d15a; --w4:#7fb069; --w5:#6b7280;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 12px; max-width: 760px; margin: 0 auto;
+  }
+  h1 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 4px 2px 12px;
+       text-transform: uppercase; letter-spacing: .08em; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+          padding: 12px; margin-bottom: 12px; }
+  textarea {
+    width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px; font: inherit; resize: vertical; min-height: 64px;
+  }
+  textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .noteinput { width: 100%; margin-top: 8px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; font: inherit;
+    font-size: 14px; }
+  .note .notetext { margin-top: 6px; font-size: 14px; color: var(--muted);
+    border-left: 2px solid var(--line); padding-left: 8px; white-space: pre-wrap; word-wrap: break-word; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .when-row { margin: 10px 0 4px; }
+  .whenbtn {
+    flex: 1 1 0; min-width: 58px; text-align: center; padding: 10px 4px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .whenbtn.sel { color: #14161a; }
+  .whenbtn[data-w="1"].sel { background: var(--w1); border-color: var(--w1); }
+  .whenbtn[data-w="2"].sel { background: var(--w2); border-color: var(--w2); }
+  .whenbtn[data-w="3"].sel { background: var(--w3); border-color: var(--w3); }
+  .whenbtn[data-w="4"].sel { background: var(--w4); border-color: var(--w4); }
+  .whenbtn[data-w="5"].sel { background: var(--w5); border-color: var(--w5); color: var(--text); }
+  .tagline { margin-top: 8px; }
+  .tagline label { color: var(--muted); font-size: 12px; width: 44px; display: inline-block;
+                   text-transform: uppercase; letter-spacing: .05em; }
+  .tagfield { flex: 1 1 200px; position: relative; }
+  .tagfield input { width: 100%; background: var(--panel2); color: var(--text);
+                    border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 20px;
+          padding: 3px 8px 3px 10px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+  .chip b { font-weight: 400; }
+  .chip .x { cursor: pointer; color: var(--muted); font-weight: 700; }
+  .ac { position: absolute; z-index: 20; left: 0; right: 0; background: var(--panel2);
+        border: 1px solid var(--line); border-top: none; border-radius: 0 0 8px 8px;
+        max-height: 180px; overflow: auto; }
+  .ac div { padding: 8px 10px; cursor: pointer; }
+  .ac div:hover, .ac div.hi { background: var(--accent); color: #14161a; }
+  button.primary { background: var(--accent); color: #14161a; border: none; border-radius: 8px;
+                   padding: 11px 18px; font-weight: 700; font-size: 15px; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
+                 border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+  .actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .filters input[type=search] { background: var(--panel2); color: var(--text);
+      border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; flex: 1 1 120px; }
+  .pill { padding: 5px 10px; border-radius: 20px; border: 1px solid var(--line);
+          background: var(--panel2); color: var(--text); font-size: 13px; cursor: pointer; }
+  .pill.sel { background: var(--accent); border-color: var(--accent); color: #14161a; }
+  .note { border-left: 3px solid var(--line); }
+  .note[data-w="1"] { border-left-color: var(--w1); }
+  .note[data-w="2"] { border-left-color: var(--w2); }
+  .note[data-w="3"] { border-left-color: var(--w3); }
+  .note[data-w="4"] { border-left-color: var(--w4); }
+  .note[data-w="5"] { border-left-color: var(--w5); }
+  .note .body { white-space: pre-wrap; word-wrap: break-word; }
+  .note .meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; align-items: center; }
+  .tagbadge { font-size: 12px; color: var(--muted); background: var(--panel2);
+              border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; }
+  .tagbadge i { font-style: normal; color: var(--accent); opacity: .8; }
+  .note .ctl { margin-left: auto; display: flex; gap: 4px; }
+  .note .ctl button { background: transparent; border: none; color: var(--muted);
+                      cursor: pointer; font-size: 13px; padding: 4px 6px; }
+  .whenbadge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; color: #14161a; }
+  .empty { color: var(--muted); text-align: center; padding: 24px; }
+  a.export { color: var(--muted); font-size: 12px; text-decoration: none; }
+</style>
+</head>
+<body>
+  <h1>Tracker</h1>
+
+  <div class="card">
+    <textarea id="body" placeholder="What's on your mind? (tap the mic on your keyboard to dictate)"></textarea>
+    <input id="note" class="noteinput" placeholder="Short note — measurements, quick details…">
+    <div class="row when-row" id="whenRow">
+      {% for w in when_tags %}
+      <div class="whenbtn" data-w="{{ loop.index }}" data-when="{{ w }}">{{ w }}</div>
+      {% endfor %}
+    </div>
+    <div id="tagInputs"></div>
+    <div class="actions">
+      <button class="primary" id="saveBtn">Add</button>
+      <button class="ghost" id="clearBtn" style="display:none">Cancel edit</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="filters">
+      <input type="search" id="search" placeholder="Search text…">
+      <div class="pill sel" data-fwhen="" id="allWhen">All</div>
+      {% for w in when_tags %}
+      <div class="pill" data-fwhen="{{ w }}">{{ w[0] }}</div>
+      {% endfor %}
+      <a class="export" href="/api/export">⬇ backup db</a>
+    </div>
+    <div class="chips" id="activeTagFilters"></div>
+  </div>
+
+  <div id="list"></div>
+
+<script>
+const WHEN_TYPES = ["who","what","where"];
+let allTags = {who:[],what:[],where:[]};
+let editId = null;
+let draftTags = {who:[],what:[],where:[]};
+let filter = { when: "", q: "", tags: {who:[],what:[],where:[]} };
+
+const el = s => document.querySelector(s);
+const listEl = el("#list");
+
+// ---- build tag inputs ----
+function buildTagInputs() {
+  const c = el("#tagInputs");
+  c.innerHTML = "";
+  WHEN_TYPES.forEach(tt => {
+    const wrap = document.createElement("div");
+    wrap.className = "row tagline";
+    wrap.innerHTML = `<label>${tt}</label>
+      <div class="tagfield">
+        <input autocomplete="off" data-tt="${tt}" placeholder="add ${tt}…">
+        <div class="ac" style="display:none"></div>
+      </div>`;
+    c.appendChild(wrap);
+    const chips = document.createElement("div");
+    chips.className = "chips"; chips.dataset.tt = tt;
+    c.appendChild(chips);
+  });
+  c.querySelectorAll("input[data-tt]").forEach(inp => {
+    inp.addEventListener("input", () => showAC(inp));
+    inp.addEventListener("keydown", e => acKey(e, inp));
+    inp.addEventListener("blur", () => setTimeout(() => hideAC(inp), 150));
+  });
+  renderDraftChips();
+}
+
+function showAC(inp) {
+  const tt = inp.dataset.tt, val = inp.value.trim().toLowerCase();
+  const box = inp.nextElementSibling;
+  const matches = allTags[tt].filter(t =>
+    t.toLowerCase().includes(val) && !draftTags[tt].includes(t));
+  if (!val && !matches.length) { hideAC(inp); return; }
+  box.innerHTML = "";
+  matches.slice(0, 8).forEach(m => {
+    const d = document.createElement("div");
+    d.textContent = m;
+    d.onmousedown = e => { e.preventDefault(); addChip(tt, m); inp.value=""; hideAC(inp); };
+    box.appendChild(d);
+  });
+  if (val && !allTags[tt].some(t => t.toLowerCase() === val)) {
+    const d = document.createElement("div");
+    d.innerHTML = `<b>+ new:</b> ${inp.value.trim()}`;
+    d.onmousedown = e => { e.preventDefault(); addChip(tt, inp.value.trim()); inp.value=""; hideAC(inp); };
+    box.appendChild(d);
+  }
+  box.style.display = box.children.length ? "block" : "none";
+}
+function hideAC(inp){ inp.nextElementSibling.style.display = "none"; }
+function acKey(e, inp) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const v = inp.value.trim();
+    if (v) { addChip(inp.dataset.tt, v); inp.value=""; hideAC(inp); }
+  }
+}
+function addChip(tt, name) {
+  if (!draftTags[tt].includes(name)) draftTags[tt].push(name);
+  renderDraftChips();
+}
+function renderDraftChips() {
+  WHEN_TYPES.forEach(tt => {
+    const box = el(`#tagInputs .chips[data-tt="${tt}"]`);
+    box.innerHTML = "";
+    draftTags[tt].forEach(name => {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.innerHTML = `<b>${name}</b><span class="x">×</span>`;
+      c.querySelector(".x").onclick = () => {
+        draftTags[tt] = draftTags[tt].filter(x => x !== name); renderDraftChips();
+      };
+      box.appendChild(c);
+    });
+  });
+}
+
+// ---- When buttons ----
+let selectedWhen = null;
+el("#whenRow").addEventListener("click", e => {
+  const b = e.target.closest(".whenbtn"); if (!b) return;
+  if (b.classList.contains("sel")) { b.classList.remove("sel"); selectedWhen = null; return; }
+  el("#whenRow").querySelectorAll(".whenbtn").forEach(x => x.classList.remove("sel"));
+  b.classList.add("sel"); selectedWhen = b.dataset.when;
+});
+
+// ---- save ----
+el("#saveBtn").addEventListener("click", save);
+async function save() {
+  const body = el("#body").value.trim();
+  const note = el("#note").value.trim();
+  if (!body && !note && !selectedWhen) return;
+  const payload = { body, note, when_tag: selectedWhen, ...draftTags };
+  const url = editId ? `/api/notes/${editId}` : "/api/notes";
+  const method = editId ? "PUT" : "POST";
+  await fetch(url, {method, headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+  resetForm(); await loadTags(); await loadNotes();
+}
+function resetForm() {
+  editId = null; selectedWhen = null;
+  el("#body").value = "";
+  el("#note").value = "";
+  draftTags = {who:[],what:[],where:[]};
+  el("#whenRow").querySelectorAll(".whenbtn").forEach(x => x.classList.remove("sel"));
+  el("#saveBtn").textContent = "Add";
+  el("#clearBtn").style.display = "none";
+  renderDraftChips();
+}
+el("#clearBtn").addEventListener("click", resetForm);
+
+// ---- filters ----
+el("#search").addEventListener("input", e => { filter.q = e.target.value.trim(); loadNotes(); });
+document.querySelectorAll(".pill[data-fwhen]").forEach(p => {
+  p.addEventListener("click", () => {
+    document.querySelectorAll(".pill[data-fwhen]").forEach(x => x.classList.remove("sel"));
+    p.classList.add("sel"); filter.when = p.dataset.fwhen; loadNotes();
+  });
+});
+function renderTagFilters() {
+  const box = el("#activeTagFilters"); box.innerHTML = "";
+  WHEN_TYPES.forEach(tt => filter.tags[tt].forEach(name => {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.innerHTML = `<b><i>${tt}:</i> ${name}</b><span class="x">×</span>`;
+    c.querySelector(".x").onclick = () => {
+      filter.tags[tt] = filter.tags[tt].filter(x => x !== name); renderTagFilters(); loadNotes();
+    };
+    box.appendChild(c);
+  }));
+}
+
+// ---- data ----
+async function loadTags() {
+  allTags = await (await fetch("/api/tags")).json();
+}
+async function loadNotes() {
+  const p = new URLSearchParams();
+  if (filter.when) p.set("when", filter.when);
+  if (filter.q) p.set("q", filter.q);
+  WHEN_TYPES.forEach(tt => filter.tags[tt].forEach(n => p.append(tt, n)));
+  const notes = await (await fetch("/api/notes?" + p.toString())).json();
+  renderNotes(notes);
+}
+function whenNum(w){ return w ? w[0] : ""; }
+function renderNotes(notes) {
+  listEl.innerHTML = "";
+  if (!notes.length) { listEl.innerHTML = `<div class="empty">No notes.</div>`; return; }
+  notes.forEach(n => {
+    const card = document.createElement("div");
+    card.className = "card note";
+    card.dataset.w = whenNum(n.when_tag);
+    const badges = [];
+    if (n.when_tag) badges.push(`<span class="whenbadge" style="background:var(--w${whenNum(n.when_tag)})">${n.when_tag}</span>`);
+    WHEN_TYPES.forEach(tt => n[tt].forEach(name =>
+      badges.push(`<span class="tagbadge" data-tt="${tt}" data-name="${encodeURIComponent(name)}"><i>${tt[0]}</i> ${name}</span>`)));
+    card.innerHTML = `
+      <div class="body">${escapeHtml(n.body) || "<span style='color:var(--muted)'>(no text)</span>"}</div>
+      ${n.note ? `<div class="notetext">${escapeHtml(n.note)}</div>` : ""}
+      <div class="meta">${badges.join("")}
+        <span class="ctl">
+          <button data-act="edit">edit</button>
+          <button data-act="del">delete</button>
+        </span>
+      </div>`;
+    card.querySelector('[data-act="edit"]').onclick = () => startEdit(n);
+    card.querySelector('[data-act="del"]').onclick = () => delNote(n.id);
+    card.querySelectorAll(".tagbadge").forEach(b => {
+      b.style.cursor = "pointer";
+      b.onclick = () => {
+        const tt = b.dataset.tt, name = decodeURIComponent(b.dataset.name);
+        if (!filter.tags[tt].includes(name)) { filter.tags[tt].push(name); renderTagFilters(); loadNotes(); }
+      };
+    });
+    listEl.appendChild(card);
+  });
+}
+function startEdit(n) {
+  editId = n.id;
+  el("#body").value = n.body;
+  el("#note").value = n.note || "";
+  selectedWhen = n.when_tag;
+  el("#whenRow").querySelectorAll(".whenbtn").forEach(x =>
+    x.classList.toggle("sel", x.dataset.when === n.when_tag));
+  draftTags = {who:[...n.who], what:[...n.what], where:[...n.where]};
+  renderDraftChips();
+  el("#saveBtn").textContent = "Save";
+  el("#clearBtn").style.display = "inline-block";
+  window.scrollTo({top:0, behavior:"smooth"});
+  el("#body").focus();
+}
+async function delNote(id) {
+  if (!confirm("Delete this note?")) return;
+  await fetch(`/api/notes/${id}`, {method:"DELETE"});
+  await loadNotes();
+}
+function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+// ---- init ----
+buildTagInputs();
+loadTags().then(loadNotes);
+</script>
+</body>
+</html>
