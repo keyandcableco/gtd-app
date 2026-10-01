@@ -28,6 +28,23 @@ Runs on port **5001** by default (5000 is left free for other apps). Change it w
 Add the page to your phone's home screen so it opens like an app. For voice capture,
 just tap the microphone key on your phone keyboard inside the text box.
 
+## Voice capture (Tasker or any HTTP client)
+
+`POST /api/capture` takes spoken text and files it as a note. End the sentence with
+"tag with ..." and the tag names are matched against the When values and your existing
+Who/What/Where tags:
+
+```bash
+curl -X POST http://100.x.y.z:5001/api/capture \
+  -H 'Content-Type: text/plain' \
+  -d 'order flex PCBs tag with Now and Workshop'
+```
+
+Send either a raw `text/plain` body (easiest, no JSON escaping) or `{"text": "..."}`.
+Names that don't match anything are kept in the note field as `unmatched tags: ...`
+rather than creating new tags; if nothing after "tag with" matches, the whole text
+is kept as the body. The response includes a one-line `summary` for a Tasker flash.
+
 ## Backup / grab a copy
 
 The **⬇ backup db** link (or `GET /api/export`) downloads the live `gtd.db`.

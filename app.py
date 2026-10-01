@@ -1,4 +1,4 @@
-import sqlite3, uuid, os
+import sqlite3, uuid, os, re
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template, g, send_file
 
@@ -174,6 +174,79 @@ def create_note():
     db.commit()
     row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
     return jsonify(serialize_note(db, row)), 201
+
+
+# ---- voice capture: "<note text> tag with Now and Workshop" ----
+TAG_PHRASE_RE = re.compile(
+    r"^(?P<body>.*)\btag(?:s|ged)?\s+(?:with\s+)?(?P<tags>.+?)[\s.,!?]*$",
+    re.I | re.S,
+)
+
+
+def _when_key(w):
+    """'1-Now' -> 'now' so spoken 'now' matches."""
+    return re.sub(r"^\d+\s*-\s*", "", w).strip().lower()
+
+
+def parse_capture(db, text):
+    """Split spoken text into (body, when_tag, {who,what,where}, unmatched).
+
+    Tag names are matched against the existing When values and tags
+    (longest first, so names containing 'and' still work). If nothing in the
+    trailing 'tag with ...' phrase matches, the whole text is kept as the body.
+    """
+    text = text.strip()
+    m = TAG_PHRASE_RE.match(text)
+    if not m:
+        return text, None, {t: [] for t in TAG_TYPES}, []
+    body, rest = m.group("body").strip(" ,.;:-"), m.group("tags").lower()
+
+    cands = [("when", _when_key(w), w) for w in WHEN_TAGS]
+    for r in db.execute("SELECT type, name FROM tags").fetchall():
+        cands.append((r["type"], r["name"].strip().lower(), r["name"]))
+    cands = [c for c in cands if c[1]]
+    cands.sort(key=lambda c: len(c[1]), reverse=True)
+
+    when, tags = None, {t: [] for t in TAG_TYPES}
+    for kind, key, name in cands:
+        pat = r"(?<!\w)" + re.escape(key) + r"(?!\w)"
+        if re.search(pat, rest):
+            rest = re.sub(pat, " ", rest, count=1)
+            if kind == "when":
+                when = when or name
+            elif name not in tags[kind]:
+                tags[kind].append(name)
+    leftover = [w for w in re.split(r"[\s,]+", rest) if w and w != "and"]
+    matched_any = when or any(tags.values())
+    if not matched_any:
+        return text, None, {t: [] for t in TAG_TYPES}, []
+    return body, when, tags, leftover
+
+
+@app.route("/api/capture", methods=["POST"])
+def api_capture():
+    """Accepts JSON {"text": ...} or a raw text/plain body (easiest from Tasker)."""
+    data = request.get_json(silent=True)
+    text = data.get("text", "") if isinstance(data, dict) else request.get_data(as_text=True)
+    text = (text or "").strip()
+    if not text:
+        return jsonify({"error": "empty"}), 400
+    db = get_db()
+    body, when, tags, leftover = parse_capture(db, text)
+    nid, ts = str(uuid.uuid4()), now_iso()
+    note = ("unmatched tags: " + " ".join(leftover)) if leftover else ""
+    db.execute(
+        "INSERT INTO notes(id, body, note, when_tag, created_at, updated_at, deleted) VALUES(?,?,?,?,?,?,0)",
+        (nid, body, note, when, ts, ts),
+    )
+    set_note_tags(db, nid, tags["who"], tags["what"], tags["where"])
+    db.commit()
+    row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    out = serialize_note(db, row)
+    # short string for a Tasker flash
+    labels = ([when] if when else []) + [n for t in TAG_TYPES for n in tags[t]]
+    out["summary"] = f"{body} [{', '.join(labels)}]" if labels else body
+    return jsonify(out), 201
 
 
 @app.route("/api/notes/<nid>", methods=["PUT"])
