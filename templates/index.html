@@ -88,6 +88,8 @@
   .whenbadge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; color: #14161a; }
   .empty { color: var(--muted); text-align: center; padding: 24px; }
   a.export { color: var(--muted); font-size: 12px; text-decoration: none; }
+  [hidden] { display: none !important; }
+  button:disabled { opacity: .6; cursor: wait; }
 </style>
   <link rel="manifest" href="/static/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -220,14 +222,25 @@ el("#whenRow").addEventListener("click", e => {
 
 // ---- save ----
 el("#saveBtn").addEventListener("click", save);
+// One save at a time, so a second tap while the first is on its way
+// doesn't add the note twice.
+let saving = false;
 async function save() {
+  if (saving) return;
   const body = el("#body").value.trim();
   const note = el("#note").value.trim();
   if (!body && !note && !selectedWhen) return;
   const payload = { body, note, when_tag: selectedWhen, ...draftTags };
   const url = editId ? `/api/notes/${editId}` : "/api/notes";
   const method = editId ? "PUT" : "POST";
-  await fetch(url, {method, headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+  const btn = el("#saveBtn"), label = btn.textContent;
+  saving = true; btn.disabled = true; btn.textContent = "Saving…";
+  let ok = false;
+  try {
+    ok = (await fetch(url, {method, headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)})).ok;
+  } catch (e) { ok = false; }
+  saving = false; btn.disabled = false; btn.textContent = label;
+  if (!ok) { alert("Couldn't save — check the connection and try again."); return; }
   resetForm(); await loadTags(); await loadNotes();
 }
 function resetForm() {
@@ -267,13 +280,17 @@ function renderTagFilters() {
 async function loadTags() {
   allTags = await (await fetch("/api/tags")).json();
 }
+// Only the newest request draws the list, so a slow reply can't
+// overwrite a newer search or filter.
+let loadSeq = 0;
 async function loadNotes() {
+  const seq = ++loadSeq;
   const p = new URLSearchParams();
   if (filter.when) p.set("when", filter.when);
   if (filter.q) p.set("q", filter.q);
   WHEN_TYPES.forEach(tt => filter.tags[tt].forEach(n => p.append(tt, n)));
   const notes = await (await fetch("/api/notes?" + p.toString())).json();
-  renderNotes(notes);
+  if (seq === loadSeq) renderNotes(notes);
 }
 function whenNum(w){ return w ? w[0] : ""; }
 function renderNotes(notes) {
@@ -297,7 +314,7 @@ function renderNotes(notes) {
         </span>
       </div>`;
     card.querySelector('[data-act="edit"]').onclick = () => startEdit(n);
-    card.querySelector('[data-act="del"]').onclick = () => delNote(n.id);
+    card.querySelector('[data-act="del"]').onclick = () => delNote(n.id, card);
     card.querySelectorAll(".tagbadge").forEach(b => {
       b.style.cursor = "pointer";
       b.onclick = () => {
@@ -322,9 +339,14 @@ function startEdit(n) {
   window.scrollTo({top:0, behavior:"smooth"});
   el("#body").focus();
 }
-async function delNote(id) {
+// Hide the card at once; bring it back if the server says no.
+async function delNote(id, card) {
+  if (card.hidden) return;
   if (!confirm("Delete this note?")) return;
-  await fetch(`/api/notes/${id}`, {method:"DELETE"});
+  card.hidden = true;
+  let ok = false;
+  try { ok = (await fetch(`/api/notes/${id}`, {method:"DELETE"})).ok; } catch (e) { ok = false; }
+  if (!ok) { card.hidden = false; return; }
   await loadNotes();
 }
 function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c =>
