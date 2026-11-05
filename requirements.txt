@@ -2,3 +2,8 @@ flask
 gunicorn
 # Claude Haiku reads captures and the Tag it button when ANTHROPIC_API_KEY is set (tagger.py).
 anthropic==2.4.0
+# Brain-dump recordings are written out here by Whisper (transcribe.py; optional,
+# the app runs without it). av 19 dropped an argument faster-whisper 1.2 still
+# passes when decoding audio (the shop app pins it the same way).
+faster-whisper
+av<19

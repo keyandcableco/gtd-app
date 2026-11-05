@@ -90,6 +90,18 @@
   .whenbadge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; color: #14161a; }
   .empty { color: var(--muted); text-align: center; padding: 24px; }
   a.export { color: var(--muted); font-size: 12px; text-decoration: none; }
+  .cardhead { font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase;
+              letter-spacing: .05em; }
+  .pnote { padding: 6px 0 6px 10px; margin-bottom: 8px; }
+  details.card summary { cursor: pointer; color: var(--muted); font-size: 12px; text-transform: uppercase;
+                         letter-spacing: .05em; }
+  .dump { border-top: 1px solid var(--line); padding: 8px 0; font-size: 14px; }
+  .dump:first-child { border-top: none; }
+  .dmeta { color: var(--muted); font-size: 12px; }
+  .dtext { margin-top: 4px; color: var(--muted); white-space: pre-wrap; cursor: pointer; overflow: hidden;
+           display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+  .dtext.open { display: block; }
+  .dnotes { margin-top: 4px; }
   [hidden] { display: none !important; }
   button:disabled { opacity: .6; cursor: wait; }
 </style>
@@ -118,6 +130,22 @@
       <button class="ghost" id="clearBtn" style="display:none">Cancel edit</button>
     </div>
   </div>
+
+  <div class="card" id="preview" hidden>
+    <div class="cardhead">Haiku would file these</div>
+    <div id="previewList"></div>
+    <div class="actions">
+      <div class="row">
+        <button class="primary" id="addAllBtn">Add all</button>
+        <button class="ghost" id="previewCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <details class="card" id="dumpsCard" hidden>
+    <summary>Recent captures <span id="dumpsPending"></span></summary>
+    <div id="dumpsList"></div>
+  </details>
 
   <div class="card">
     <div class="filters">
@@ -262,10 +290,12 @@ function resetForm() {
 }
 el("#clearBtn").addEventListener("click", resetForm);
 
-// ---- Tag it: Haiku reads the text box and fills in the form ----
-// It tidies the text, fills the When and the note line only where they're
-// blank, and adds tags; nothing is saved until Add. A tag that isn't in the
-// tracker yet is offered as a dashed "+" chip to tap.
+// ---- Tag it: Haiku reads the text box ----
+// One note: it fills in the form (tidied text, the When and the note line
+// only where they're blank, tags added), and a tag that isn't in the
+// tracker yet is offered as a dashed "+" chip to tap. Several notes (a
+// brain dump): they're listed to drop or Add all. Nothing is saved until
+// Add.
 const tagBtn = el("#tagBtn");
 if (tagBtn) tagBtn.addEventListener("click", tagIt);
 async function tagIt() {
@@ -283,16 +313,107 @@ async function tagIt() {
   tagBtn.disabled = false; tagBtn.textContent = label;
   if (err) { alert("Haiku couldn't tag it: " + err); return; }
   if (el("#body").value.trim() !== text) return;  // changed while Haiku read it: leave it be
-  el("#body").value = res.body;
+  if (!res.notes.length) { alert("Haiku found nothing to file in that."); return; }
+  if (res.notes.length > 1) { showPreview(res.notes); return; }
+  const n = res.notes[0];
+  el("#body").value = n.body;
   const note = el("#note"), had = note.value.trim();
-  if (res.note && !had.includes(res.note)) note.value = had ? `${had}; ${res.note}` : res.note;
-  if (res.when_tag && !selectedWhen) {
-    selectedWhen = res.when_tag;
+  if (n.note && !had.includes(n.note)) note.value = had ? `${had}; ${n.note}` : n.note;
+  if (n.when_tag && !selectedWhen) {
+    selectedWhen = n.when_tag;
     el("#whenRow").querySelectorAll(".whenbtn").forEach(x =>
       x.classList.toggle("sel", x.dataset.when === selectedWhen));
   }
-  WHEN_TYPES.forEach(tt => res[tt].forEach(n => addChip(tt, n)));
-  renderNewTags(res.new_tags.filter(t => !draftTags[t.type].includes(t.name)));
+  WHEN_TYPES.forEach(tt => n[tt].forEach(name => addChip(tt, name)));
+  renderNewTags(n.new_tags.filter(t => !draftTags[t.type].includes(t.name)));
+}
+
+// A brain dump's notes, to drop the ones you don't want and Add all.
+// Tags that don't exist yet go in the note line ("maybe tag: who Dad"),
+// as they do for Tasker captures.
+let previewNotes = [];
+function showPreview(notes) {
+  previewNotes = notes;
+  renderPreview();
+  el("#preview").hidden = false;
+  el("#preview").scrollIntoView({behavior: "smooth"});
+}
+function hidePreview() { previewNotes = []; el("#preview").hidden = true; }
+function renderPreview() {
+  const box = el("#previewList"); box.innerHTML = "";
+  previewNotes.forEach(n => {
+    const d = document.createElement("div");
+    d.className = "note pnote"; d.dataset.w = whenNum(n.when_tag);
+    const badges = [];
+    if (n.when_tag) badges.push(`<span class="whenbadge" style="background:var(--w${whenNum(n.when_tag)})">${n.when_tag}</span>`);
+    WHEN_TYPES.forEach(tt => n[tt].forEach(name =>
+      badges.push(`<span class="tagbadge"><i>${tt[0]}</i> ${escapeHtml(name)}</span>`)));
+    n.new_tags.forEach(t => badges.push(`<span class="tagbadge">maybe ${t.type}: ${escapeHtml(t.name)}</span>`));
+    d.innerHTML = `<div class="body">${escapeHtml(n.body)}</div>
+      ${n.note ? `<div class="notetext">${escapeHtml(n.note)}</div>` : ""}
+      <div class="meta">${badges.join("")}<span class="ctl"><button>drop</button></span></div>`;
+    d.querySelector("button").onclick = () => {
+      previewNotes = previewNotes.filter(x => x !== n);
+      previewNotes.length ? renderPreview() : hidePreview();
+    };
+    box.appendChild(d);
+  });
+  el("#addAllBtn").textContent = previewNotes.length === 1 ? "Add it" : `Add all ${previewNotes.length}`;
+}
+el("#previewCancel").addEventListener("click", hidePreview);
+el("#addAllBtn").addEventListener("click", async () => {
+  const btn = el("#addAllBtn");
+  if (btn.disabled || !previewNotes.length) return;
+  btn.disabled = true;
+  const failed = [];
+  for (const n of previewNotes) {
+    const maybe = n.new_tags.map(t => `${t.type} ${t.name}`).join(", ");
+    const note = [n.note, maybe && "maybe tag: " + maybe].filter(Boolean).join("; ");
+    let ok = false;
+    try {
+      ok = (await fetch("/api/notes", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({body: n.body, note, when_tag: n.when_tag, who: n.who, what: n.what, where: n.where})})).ok;
+    } catch (e) { ok = false; }
+    if (!ok) failed.push(n);
+  }
+  btn.disabled = false;
+  if (failed.length) {
+    previewNotes = failed; renderPreview();
+    alert(`Couldn't save ${failed.length} of them; they're still listed. Check the connection and try again.`);
+  } else { hidePreview(); resetForm(); }
+  await loadTags(); await loadNotes();
+});
+
+// ---- Recent captures: what was said or sent, and the notes it became ----
+// While a recording is still being written out, it checks again every 15 s.
+let dumpTimer = null;
+async function loadDumps() {
+  let res;
+  try { res = await (await fetch("/api/dumps")).json(); } catch (e) { return; }
+  const card = el("#dumpsCard"), list = el("#dumpsList");
+  card.hidden = !res.dumps.length;
+  const pending = res.dumps.filter(d => d.status === "queued" || d.status === "transcribing").length;
+  el("#dumpsPending").textContent = pending ? `· ${pending} being written out` : "";
+  if (pending) card.open = true;
+  list.innerHTML = "";
+  res.dumps.forEach(d => {
+    const row = document.createElement("div");
+    row.className = "dump";
+    const at = new Date(d.created_at).toLocaleString([], {weekday: "short", hour: "numeric", minute: "2-digit"});
+    let status;
+    if (d.status === "queued") status = res.speech_to_text ? "waiting to be written out" : "waiting: speech-to-text is off";
+    else if (d.status === "transcribing") status = "being written out…";
+    else if (d.status === "failed") status = "couldn't file it: " + d.error;
+    else status = `${d.made} note${d.made === 1 ? "" : "s"}` + (d.reader === "rules" ? " (without Haiku)" : "");
+    row.innerHTML = `<div class="dmeta">${d.recording ? "Recording" : "Typed"} · ${escapeHtml(at)} · ${escapeHtml(status)}</div>
+      ${d.text ? `<div class="dtext">${escapeHtml(d.text)}</div>` : ""}
+      ${d.notes.length ? `<div class="dnotes">→ ${d.notes.map(n => escapeHtml(n.body)).join(" · ")}</div>` : ""}`;
+    const t = row.querySelector(".dtext");
+    if (t) t.onclick = () => t.classList.toggle("open");
+    list.appendChild(row);
+  });
+  clearTimeout(dumpTimer);
+  if (pending) dumpTimer = setTimeout(async () => { await loadDumps(); loadNotes(); }, 15000);
 }
 function renderNewTags(list) {
   const box = el("#newTags"); box.innerHTML = "";
@@ -407,6 +528,7 @@ function escapeHtml(s){ return (s||"").replace(/[&<>"']/g, c =>
 // ---- init ----
 buildTagInputs();
 loadTags().then(loadNotes);
+loadDumps();
 </script>
 </body>
 </html>

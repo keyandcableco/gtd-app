@@ -43,13 +43,22 @@ The response includes a one-line `summary` for a Tasker flash, and `reader` says
 of the two readers below filed it.
 
 **With an Anthropic API key** (`ANTHROPIC_API_KEY` in the app's environment), Claude
-Haiku reads the sentence the way you'd say it (`tagger.py`): it tidies the note, moves
-details to the note field, picks a When from what you said ("this weekend" is Next,
-"no rush" is Later; none if you didn't say), and picks Who/What/Where tags from the ones
-you already have. It never makes a new tag: a tag you ask for that doesn't exist, or a
-person or place that might make a good one, is added to the note field as
-`maybe tag: who Dad`. Only the note's text and your tag names go to Anthropic; a capture
-costs a small fraction of a cent and takes a second or two.
+Haiku reads it the way you'd say it (`tagger.py`), from one to-do to a whole brain dump,
+and files as many notes as it holds. Each note gets tidied text, details in the note
+field, a When from what you said ("this weekend" is Next, "no rush" is Later; none if you
+didn't say), and Who/What/Where tags from the ones you already have. It never makes a new
+tag: a tag you ask for that doesn't exist, or a person or place that might make a good
+one, is added to the note field as `maybe tag: who Dad`.
+
+A big idea (something that takes several sittings over weeks) becomes a project note plus
+its next 2 to 4 steps, spread over Next, Soon and Later. The note field says which is
+which: `project`, `part of: <project>` for a step you said, and `Haiku's step for:
+<project>` for one Haiku thought up (never Now; delete the ones you don't want).
+Searching for the project's name finds its steps.
+
+Only the text and your tag names go to Anthropic; a capture costs a small fraction of a
+cent and takes a few seconds. Every capture is kept as it came in, with the notes it
+became, under **Recent captures** on the page.
 
 **Without a key**, or whenever Haiku can't be reached, end the sentence with
 "tag with ..." and the tag names are matched against the When values and your existing
@@ -60,7 +69,38 @@ the whole text is kept as the body.
 With a key the page also gets a **Tag it** button: Haiku reads the text box and fills in
 the form (tidied text, the note line and When where they're blank, and tags). Nothing is
 saved until you tap Add, and a tag that doesn't exist yet is offered as a dashed
-"+ who: Dad" chip you can tap to add it.
+"+ who: Dad" chip you can tap to add it. If the text holds several notes, they're listed
+instead, to drop the ones you don't want and Add all.
+
+## Brain dumps (recordings, written out on the server)
+
+For rambling longer than the phone's speech-to-text will wait, `POST /api/dump` takes a
+recording: the raw audio as the body (any common format; m4a from the phone is fine) or a
+multipart upload. It answers at once with a `summary`; Whisper writes the recording out
+here (`transcribe.py`, faster-whisper on the CPU, the audio never leaves the server) and
+it's filed like a capture. On a Raspberry Pi 4, the default `medium.en` takes about
+2.7 minutes per minute of talk and 2 GB of memory while it works (let go again after);
+`WHISPER_MODEL=small.en` is about three times faster but drops more words, and `off`
+leaves recordings waiting. Recent captures on the page shows each one's progress.
+
+The server needs `faster-whisper` (requirements.txt) and two folders that outlive the
+container: `dumps/` (the recordings) and `whisper_models/` (downloaded once, about 1.5 GB
+for medium.en; `WHISPER_DIR` can point at a copy another app already has).
+
+**Tasker** (one task that starts recording, and sends it when run again; point the
+phone's double-tap at it):
+
+1. `If %BRAINDUMP ~ on`
+2. ` Record Audio Stop`
+3. ` Variable Clear %BRAINDUMP`
+4. ` HTTP Request`: Method POST, URL `http://100.x.y.z:5001/api/dump`, Headers
+   `Content-Type:audio/mp4`, File To Send `Tasker/braindump.m4a`, Timeout 60
+5. ` Flash %http_data.summary`
+6. `Else`
+7. ` Record Audio`: Source Mic, Codec AAC, Format MPEG4, File `Tasker/braindump.m4a`
+8. ` Variable Set %BRAINDUMP to on`
+9. ` Flash Listening: double-tap again to send`
+10. `End If`
 
 ## Backup / grab a copy
 

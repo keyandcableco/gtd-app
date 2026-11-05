@@ -28,3 +28,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# --- Brain-dump recordings and the Whisper model (kept on the server) ---
+dumps/
+whisper_models/

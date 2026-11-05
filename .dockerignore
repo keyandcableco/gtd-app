@@ -5,3 +5,7 @@ venv/
 .env
 *.sqlite3
 .git/
+dumps/
+whisper_models/
+*.db
+tests/
