@@ -102,6 +102,21 @@ phone's double-tap at it):
 9. ` Flash Listening: double-tap again to send`
 10. `End If`
 
+## Done, details, and Claude's handoffs
+
+Tick a note's box when it's done: it leaves the list, and **✓ Done** shows the finished
+ones (untick to open one again). Delete is for notes you don't want at all. A note can
+also carry **Details**, the long version folded shut under it.
+
+Claude sessions file what they leave open for Greg here, and read his notes by project,
+with the `gtd` command (`~/.local/bin/gtd` on the laptop, over Tailscale): `gtd list
+--what Minichord`, `gtd add "Title" --details ... --what PCBs --when next --source
+"Claude: <topic>"`, `gtd done ID`. The API underneath: `POST /api/notes` takes `details`,
+`source` and `ref` (sending the same `ref` again updates that note), `PUT
+/api/notes/<id>` changes only the fields sent (`"done": true/false` ticks it), and `GET
+/api/notes` takes `done=0|1|all` and `source=` (a prefix). `tools/import_open_loops.py`
+moved the Open Loops page's open items in on 2026-11-05.
+
 ## Backup / grab a copy
 
 The **⬇ backup db** link (or `GET /api/export`) downloads the live `gtd.db`.

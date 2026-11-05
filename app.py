@@ -83,10 +83,19 @@ def init_db():
         );
         """
     )
-    # migrate older DBs that predate the note column
+    # migrate older DBs that predate a column
     cols = [r[1] for r in db.execute("PRAGMA table_info(notes)").fetchall()]
-    if "note" not in cols:
-        db.execute("ALTER TABLE notes ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    for col, decl in (
+        ("note", "TEXT NOT NULL DEFAULT ''"),
+        # the long part, folded shut under the note (Claude's handoffs: files, commits, what to say when done)
+        ("details", "TEXT NOT NULL DEFAULT ''"),
+        ("done_at", "TEXT"),                       # ticked off; NULL while open
+        ("source", "TEXT NOT NULL DEFAULT ''"),    # where it came from: "Claude: <session>", "Open Loops: ..."
+        ("ref", "TEXT NOT NULL DEFAULT ''"),       # a sender's own id, so sending it again updates it
+    ):
+        if col not in cols:
+            db.execute(f"ALTER TABLE notes ADD COLUMN {col} {decl}")
+    db.execute("CREATE INDEX IF NOT EXISTS notes_ref ON notes(ref) WHERE ref != ''")
     db.commit()
     db.close()
 
@@ -118,7 +127,11 @@ def serialize_note(db, row):
         "id": row["id"],
         "body": row["body"],
         "note": row["note"],
+        "details": row["details"],
         "when_tag": row["when_tag"],
+        "done_at": row["done_at"],
+        "source": row["source"],
+        "ref": row["ref"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         **grouped,
@@ -159,6 +172,11 @@ def api_notes():
     db = get_db()
     clauses = ["deleted = 0"]
     params = []
+    done = request.args.get("done", "0")  # 0: open notes (the default), 1: done ones, all: both
+    if done == "0":
+        clauses.append("n.done_at IS NULL")
+    elif done == "1":
+        clauses.append("n.done_at IS NOT NULL")
     when = request.args.get("when")
     if when:
         clauses.append("when_tag = ?")
@@ -177,27 +195,59 @@ def api_notes():
         )
         params = [ttype, name] + params
     q = request.args.get("q")
-    if q:  # the note line too, so a project's name finds its steps
-        clauses.append("(n.body LIKE ? OR n.note LIKE ?)")
-        params += [f"%{q}%", f"%{q}%"]
+    if q:  # the note line and details too, so a project's name finds its steps
+        clauses.append("(n.body LIKE ? OR n.note LIKE ? OR n.details LIKE ?)")
+        params += [f"%{q}%"] * 3
+    source = request.args.get("source")  # a prefix: "Claude" finds every session's
+    if source:
+        clauses.append("n.source LIKE ? ESCAPE '\\'")
+        params.append(source.replace("%", r"\%") + "%")
 
     sql = base + " WHERE " + " AND ".join(clauses)
-    # sort: When ascending (1..5), then newest first
-    sql += " ORDER BY CASE WHEN n.when_tag IS NULL THEN 1 ELSE 0 END, n.when_tag, n.updated_at DESC"
+    # sort: done ones newest first; open ones by When ascending (1..5), then newest first
+    if done == "1":
+        sql += " ORDER BY n.done_at DESC"
+    else:
+        sql += " ORDER BY CASE WHEN n.when_tag IS NULL THEN 1 ELSE 0 END, n.when_tag, n.updated_at DESC"
     rows = db.execute(sql, params).fetchall()
     return jsonify([serialize_note(db, r) for r in rows])
 
 
+def _text(data, key, default=""):
+    v = data.get(key, default)
+    return v.strip() if isinstance(v, str) else default
+
+
+def _when(data):
+    """A When from the request, or None: "2-Next", or just "next"."""
+    w = data.get("when_tag")
+    if not isinstance(w, str) or not w.strip():
+        return None
+    w = w.strip()
+    return w if w in WHEN_TAGS else next((x for x in WHEN_TAGS if _when_key(x) == w.lower()), None)
+
+
 @app.route("/api/notes", methods=["POST"])
 def create_note():
+    """A new note. With a "ref" (the sender's own id for it, e.g. the
+    importer's "openloops:rr-qs8-notes"), sending it again updates the
+    note with that ref instead of adding a second one."""
     db = get_db()
     data = request.get_json(force=True)
-    nid = data.get("id") or str(uuid.uuid4())
+    if not isinstance(data, dict):
+        return jsonify({"error": "send a JSON object"}), 400
+    ref = _text(data, "ref")
+    if ref:
+        row = db.execute("SELECT id FROM notes WHERE ref=? AND deleted=0", (ref,)).fetchone()
+        if row:
+            return update_note(row["id"])
+    nid = data.get("id") if isinstance(data.get("id"), str) and data.get("id") else str(uuid.uuid4())
     ts = now_iso()
     db.execute(
-        "INSERT INTO notes(id, body, note, when_tag, created_at, updated_at, deleted) VALUES(?,?,?,?,?,?,0)",
-        (nid, data.get("body", "").strip(), data.get("note", "").strip(),
-         data.get("when_tag"), ts, ts),
+        "INSERT INTO notes(id, body, note, details, when_tag, source, ref, created_at, updated_at, deleted)"
+        " VALUES(?,?,?,?,?,?,?,?,?,0)",
+        (nid, _text(data, "body"), _text(data, "note"), _text(data, "details"), _when(data),
+         _text(data, "source"), ref, ts, ts),
     )
     set_note_tags(db, nid, data.get("who"), data.get("what"), data.get("where"))
     db.commit()
@@ -292,7 +342,7 @@ def read_notes(db, text, wait, tries=1):
     return [{"body": body, "note": note, "when_tag": when, **tags}], "rules"
 
 
-def file_notes(db, text, wait, tries=1):
+def file_notes(db, text, wait, tries=1, source="Capture"):
     """Read the text into notes and write them, not yet committed: (note ids,
     reader, how many were left out over MAX_NOTES). Haiku is asked before
     anything is written, so no write waits on it, and the caller commits the
@@ -302,8 +352,9 @@ def file_notes(db, text, wait, tries=1):
     for n in notes[:MAX_NOTES]:
         nid = str(uuid.uuid4())
         db.execute(
-            "INSERT INTO notes(id, body, note, when_tag, created_at, updated_at, deleted) VALUES(?,?,?,?,?,?,0)",
-            (nid, n["body"], n["note"], n["when_tag"], ts, ts),
+            "INSERT INTO notes(id, body, note, when_tag, source, created_at, updated_at, deleted)"
+            " VALUES(?,?,?,?,?,?,?,0)",
+            (nid, n["body"], n["note"], n["when_tag"], source, ts, ts),
         )
         set_note_tags(db, nid, n["who"], n["what"], n["where"])
         ids.append(nid)
@@ -457,7 +508,7 @@ def process_next_dump(db):
             set_dump(db, did, text=text)
             db.commit()
         # Nobody's waiting: give Haiku time, and a few tries before the one-note fallback.
-        ids, reader, dropped = file_notes(db, text, wait=180, tries=3)
+        ids, reader, dropped = file_notes(db, text, wait=180, tries=3, source="Recording")
         set_dump(db, did, status="filed", reader=reader, note_ids=",".join(ids), error=left_out(dropped, len(ids)))
         db.commit()
     except Exception as e:
@@ -530,17 +581,28 @@ def api_suggest():
 
 @app.route("/api/notes/<nid>", methods=["PUT"])
 def update_note(nid):
+    """Change a note: only the fields sent change (the page sends them all).
+    "done": true ticks it off, false opens it again."""
     db = get_db()
     data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "send a JSON object"}), 400
     row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
     if not row:
         return jsonify({"error": "not found"}), 404
+    done_at = row["done_at"]
+    if "done" in data:
+        done_at = (done_at or now_iso()) if data["done"] else None
     db.execute(
-        "UPDATE notes SET body=?, note=?, when_tag=?, updated_at=? WHERE id=?",
-        (data.get("body", row["body"]).strip(), data.get("note", row["note"]).strip(),
-         data.get("when_tag"), now_iso(), nid),
+        "UPDATE notes SET body=?, note=?, details=?, when_tag=?, source=?, done_at=?, updated_at=? WHERE id=?",
+        (_text(data, "body", row["body"]), _text(data, "note", row["note"]),
+         _text(data, "details", row["details"]),
+         _when(data) if "when_tag" in data else row["when_tag"],
+         _text(data, "source", row["source"]), done_at, now_iso(), nid),
     )
-    set_note_tags(db, nid, data.get("who"), data.get("what"), data.get("where"))
+    if any(t in data for t in TAG_TYPES):
+        old = serialize_note(db, row)
+        set_note_tags(db, nid, *(data[t] if t in data else old[t] for t in TAG_TYPES))
     db.commit()
     row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
     return jsonify(serialize_note(db, row))

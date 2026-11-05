@@ -292,6 +292,32 @@ class Routes(unittest.TestCase):
         self.assertEqual(self.c.post("/api/suggest", json={"text": 123}).status_code, 400)
         self.assertEqual(self.c.post("/api/capture", json={"text": 123}).status_code, 400)
 
+    def test_done_details_source_and_ref(self):
+        add = lambda **kw: self.c.post("/api/notes", json=kw).get_json()
+        n = add(body="Order flex PCBs", details="JLC, 0.12 mm", when_tag="next", what=["PCBs"],
+                source="Claude: test", ref="test:1")
+        self.assertEqual((n["when_tag"], n["details"], n["source"], n["what"]),
+                         ("2-Next", "JLC, 0.12 mm", "Claude: test", ["PCBs"]))
+        again = self.c.post("/api/notes", json={"body": "Order flex PCBs now", "ref": "test:1"})
+        self.assertEqual((again.status_code, again.get_json()["id"]), (200, n["id"]))  # updated, not a second one
+        self.assertEqual(again.get_json()["what"], ["PCBs"])  # fields not sent are kept
+        self.assertEqual(len(self.notes()), 1)
+
+        r = self.c.put(f"/api/notes/{n['id']}", json={"done": True}).get_json()
+        self.assertTrue(r["done_at"])
+        self.assertEqual((r["body"], r["details"], r["when_tag"]), ("Order flex PCBs now", "JLC, 0.12 mm", "2-Next"))
+        self.assertEqual(self.notes(), [])
+        self.assertEqual([x["id"] for x in self.notes(done="1")], [n["id"]])
+        self.assertEqual(len(self.notes(done="all")), 1)
+        self.c.put(f"/api/notes/{n['id']}", json={"done": False})
+        self.assertEqual([x["source"] for x in self.notes(source="Claude")], ["Claude: test"])
+        self.assertEqual(self.notes(source="Tasker"), [])
+        self.assertEqual(len(self.notes(q="0.12 mm")), 1)  # search covers details
+
+    def test_captures_say_where_they_came_from(self):
+        self.c.post("/api/capture", data="mow the lawn", content_type="text/plain")
+        self.assertEqual(self.notes()[0]["source"], "Capture")
+
     def test_tag_it_button_shows_only_with_a_key(self):
         self.assertNotIn(b'id="tagBtn"', self.c.get("/").data)
         with mock.patch.object(tagger, "available", return_value=True):

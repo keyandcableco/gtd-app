@@ -90,6 +90,18 @@
   .whenbadge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; color: #14161a; }
   .empty { color: var(--muted); text-align: center; padding: 24px; }
   a.export { color: var(--muted); font-size: 12px; text-decoration: none; }
+  .toprow { display: flex; gap: 10px; align-items: flex-start; }
+  .toprow .body { flex: 1; min-width: 0; }
+  .tick { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+  .note.isdone .body { color: var(--muted); text-decoration: line-through; }
+  .notedetails { margin-top: 6px; font-size: 14px; }
+  .notedetails summary, .morebox summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+  .notedetails div { margin-top: 4px; color: var(--muted); white-space: pre-wrap; word-wrap: break-word;
+                     border-left: 2px solid var(--line); padding-left: 8px; }
+  .morebox { margin-top: 8px; }
+  .morebox textarea { margin-top: 6px; min-height: 90px; font-size: 14px; }
+  .srcbadge { font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px;
+              padding: 1px 6px; }
   .cardhead { font-size: 12px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase;
               letter-spacing: .05em; }
   .pnote { padding: 6px 0 6px 10px; margin-bottom: 8px; }
@@ -115,6 +127,9 @@
   <div class="card">
     <textarea id="body" placeholder="What's on your mind? (tap the mic on your keyboard to dictate)"></textarea>
     <input id="note" class="noteinput" placeholder="Short note — measurements, quick details…">
+    <details id="detailsBox" class="morebox"><summary>Details</summary>
+      <textarea id="details" placeholder="The long version: steps, files, links, what to tell Claude when it's done…"></textarea>
+    </details>
     <div class="row when-row" id="whenRow">
       {% for w in when_tags %}
       <div class="whenbtn" data-w="{{ loop.index }}" data-when="{{ w }}">{{ w }}</div>
@@ -150,6 +165,7 @@
   <div class="card">
     <div class="filters">
       <input type="search" id="search" placeholder="Search text…">
+      <div class="pill" id="doneToggle" title="Show the notes you've ticked off">✓ Done</div>
       <div class="pill sel" data-fwhen="" id="allWhen">All</div>
       {% for w in when_tags %}
       <div class="pill" data-fwhen="{{ w }}">{{ w[0] }}</div>
@@ -166,7 +182,7 @@ const WHEN_TYPES = ["who","what","where"];
 let allTags = {who:[],what:[],where:[]};
 let editId = null;
 let draftTags = {who:[],what:[],where:[]};
-let filter = { when: "", q: "", tags: {who:[],what:[],where:[]} };
+let filter = { when: "", q: "", done: false, tags: {who:[],what:[],where:[]} };
 
 const el = s => document.querySelector(s);
 const listEl = el("#list");
@@ -263,8 +279,9 @@ async function save() {
   if (saving) return;
   const body = el("#body").value.trim();
   const note = el("#note").value.trim();
-  if (!body && !note && !selectedWhen) return;
-  const payload = { body, note, when_tag: selectedWhen, ...draftTags };
+  const details = el("#details").value.trim();
+  if (!body && !note && !details && !selectedWhen) return;
+  const payload = { body, note, details, when_tag: selectedWhen, ...draftTags };
   const url = editId ? `/api/notes/${editId}` : "/api/notes";
   const method = editId ? "PUT" : "POST";
   const btn = el("#saveBtn"), label = btn.textContent;
@@ -281,6 +298,8 @@ function resetForm() {
   editId = null; selectedWhen = null;
   el("#body").value = "";
   el("#note").value = "";
+  el("#details").value = "";
+  el("#detailsBox").open = false;
   draftTags = {who:[],what:[],where:[]};
   el("#whenRow").querySelectorAll(".whenbtn").forEach(x => x.classList.remove("sel"));
   el("#saveBtn").textContent = "Add";
@@ -479,6 +498,7 @@ async function loadNotes() {
   const p = new URLSearchParams();
   if (filter.when) p.set("when", filter.when);
   if (filter.q) p.set("q", filter.q);
+  if (filter.done) p.set("done", "1");
   WHEN_TYPES.forEach(tt => filter.tags[tt].forEach(n => p.append(tt, n)));
   const notes = await (await fetch("/api/notes?" + p.toString())).json();
   if (seq === loadSeq) renderNotes(notes);
@@ -489,15 +509,20 @@ function renderNotes(notes) {
   if (!notes.length) { listEl.innerHTML = `<div class="empty">No notes.</div>`; return; }
   notes.forEach(n => {
     const card = document.createElement("div");
-    card.className = "card note";
+    card.className = "card note" + (n.done_at ? " isdone" : "");
     card.dataset.w = whenNum(n.when_tag);
     const badges = [];
     if (n.when_tag) badges.push(`<span class="whenbadge" style="background:var(--w${whenNum(n.when_tag)})">${n.when_tag}</span>`);
     WHEN_TYPES.forEach(tt => n[tt].forEach(name =>
       badges.push(`<span class="tagbadge" data-tt="${tt}" data-name="${encodeURIComponent(name)}"><i>${tt[0]}</i> ${escapeHtml(name)}</span>`)));
+    if (n.source) badges.push(`<span class="srcbadge">${escapeHtml(n.source)}</span>`);
     card.innerHTML = `
-      <div class="body">${escapeHtml(n.body) || "<span style='color:var(--muted)'>(no text)</span>"}</div>
+      <div class="toprow">
+        <input type="checkbox" class="tick" title="${n.done_at ? "Done: untick to open it again" : "Tick it off"}" ${n.done_at ? "checked" : ""}>
+        <div class="body">${escapeHtml(n.body) || "<span style='color:var(--muted)'>(no text)</span>"}</div>
+      </div>
       ${n.note ? `<div class="notetext">${escapeHtml(n.note)}</div>` : ""}
+      ${n.details ? `<details class="notedetails"><summary>Details</summary><div>${escapeHtml(n.details)}</div></details>` : ""}
       <div class="meta">${badges.join("")}
         <span class="ctl">
           <button data-act="edit">edit</button>
@@ -506,6 +531,7 @@ function renderNotes(notes) {
       </div>`;
     card.querySelector('[data-act="edit"]').onclick = () => startEdit(n);
     card.querySelector('[data-act="del"]').onclick = () => delNote(n.id, card);
+    card.querySelector(".tick").onchange = e => setDone(n.id, e.target.checked, card, e.target);
     card.querySelectorAll(".tagbadge").forEach(b => {
       b.style.cursor = "pointer";
       b.onclick = () => {
@@ -520,6 +546,8 @@ function startEdit(n) {
   editId = n.id;
   el("#body").value = n.body;
   el("#note").value = n.note || "";
+  el("#details").value = n.details || "";
+  el("#detailsBox").open = !!n.details;
   selectedWhen = n.when_tag;
   el("#whenRow").querySelectorAll(".whenbtn").forEach(x =>
     x.classList.toggle("sel", x.dataset.when === n.when_tag));
@@ -531,6 +559,22 @@ function startEdit(n) {
   window.scrollTo({top:0, behavior:"smooth"});
   el("#body").focus();
 }
+// Tick off (or open again): the card leaves this view at once, and comes
+// back with its box as it was if the server says no.
+async function setDone(id, done, card, box) {
+  card.hidden = true;
+  let ok = false;
+  try {
+    ok = (await fetch(`/api/notes/${id}`, {method: "PUT", headers: {"Content-Type": "application/json"},
+                                          body: JSON.stringify({done})})).ok;
+  } catch (e) { ok = false; }
+  if (!ok) { card.hidden = false; box.checked = !done; alert("Couldn't save that. Check the connection."); }
+}
+el("#doneToggle").addEventListener("click", () => {
+  filter.done = !filter.done;
+  el("#doneToggle").classList.toggle("sel", filter.done);
+  loadNotes();
+});
 // Hide the card at once; bring it back if the server says no.
 async function delNote(id, card) {
   if (card.hidden) return;
