@@ -62,9 +62,8 @@ class ToNotes(unittest.TestCase):
                            raw(kind="said", body="Order parts", when="1-Now", project="Arcade console"))
         self.assertEqual((step["when_tag"], said["when_tag"]), ("2-Next", "1-Now"))
 
-    def test_notes_without_text_are_dropped_and_a_dump_is_capped(self):
+    def test_notes_without_text_are_dropped(self):
         self.assertEqual(notes(raw(body="  ")), [])
-        self.assertEqual(len(notes(*[raw(body=f"n{i}") for i in range(30)])), tagger.MAX_NOTES)
         self.assertEqual(notes(raw(kind="project", body="P", project="P"))[0]["project"], "")
 
 
@@ -206,6 +205,75 @@ class Routes(unittest.TestCase):
         self.assertEqual(sorted(os.path.splitext(a)[1] for a in os.listdir(os.environ["GTD_DUMPS"])),
                          [".audio", ".ogg"])
         self.assertEqual(self.c.post("/api/dump", data=b"").status_code, 400)
+
+    def test_a_mislabelled_upload_is_still_kept(self):
+        r = self.c.post("/api/dump", data=b"m4a bytes", content_type="application/x-www-form-urlencoded")
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(len(os.listdir(os.environ["GTD_DUMPS"])), 1)
+
+    def test_a_long_dump_says_how_many_notes_were_left_out(self):
+        with mock.patch.object(gtd, "MAX_NOTES", 3), self.haiku(*[raw(body=f"note {i}") for i in range(5)]):
+            self.c.post("/api/capture", data="a long ramble", content_type="text/plain")
+        [dump] = self.c.get("/api/dumps").get_json()["dumps"]
+        self.assertEqual((dump["made"], len(self.notes())), (3, 3))
+        self.assertEqual(dump["error"], "Only the first 3 of 5 notes were filed; the rest are in the words above.")
+
+    def test_a_failure_mid_filing_files_nothing_and_can_be_tried_again(self):
+        self.c.post("/api/dump", data=b"x", content_type="audio/mp4")
+        db = gtd.connect()
+        real = gtd.set_note_tags
+        calls = []
+
+        def second_one_breaks(*a):
+            calls.append(1)
+            if len(calls) == 2:
+                raise sqlite3_error("disk I/O error")
+            return real(*a)
+        sqlite3_error = __import__("sqlite3").OperationalError
+        with mock.patch.object(transcribe, "transcribe_file", return_value="a and b") as tf, \
+                mock.patch.object(gtd, "set_note_tags", side_effect=second_one_breaks), \
+                self.haiku(raw(body="A"), raw(body="B")):
+            gtd.process_next_dump(db)
+        [dump] = self.c.get("/api/dumps").get_json()["dumps"]
+        self.assertEqual((dump["status"], dump["text"], self.notes()), ("failed", "a and b", []))
+
+        self.assertEqual(self.c.post(f"/api/dumps/{dump['id']}/retry").status_code, 200)
+        with mock.patch.object(transcribe, "transcribe_file") as tf2, self.haiku(raw(body="A"), raw(body="B")):
+            gtd.process_next_dump(db)
+        tf2.assert_not_called()  # the transcript was kept: not written out again
+        self.assertEqual(sorted(n["body"] for n in self.notes()), ["A", "B"])
+        self.assertEqual(self.c.post(f"/api/dumps/{dump['id']}/retry").status_code, 404)  # filed now
+
+    def test_a_recording_gets_haiku_three_tries_before_the_one_note_fallback(self):
+        self.c.post("/api/dump", data=b"x", content_type="audio/mp4")
+        found = notes(raw(body="Clean the gutters"))
+        with mock.patch.object(transcribe, "transcribe_file", return_value="clean the gutters"), \
+                mock.patch.object(gtd.time, "sleep") as sleep, \
+                mock.patch.multiple(tagger, available=mock.Mock(return_value=True),
+                                    read=mock.Mock(side_effect=[RuntimeError("overloaded"), RuntimeError("overloaded"),
+                                                                found])):
+            gtd.process_next_dump(gtd.connect())
+        self.assertEqual(sleep.call_count, 2)
+        [dump] = self.c.get("/api/dumps").get_json()["dumps"]
+        self.assertEqual((dump["status"], dump["reader"]), ("filed", "haiku"))
+
+    def test_a_recording_cut_off_twice_waits_for_try_again(self):
+        for _ in range(2):
+            self.c.post("/api/dump", data=b"x", content_type="audio/mp4")
+        db = gtd.connect()
+        first, second = [r["id"] for r in db.execute("SELECT id FROM dumps ORDER BY created_at")]
+        db.execute("UPDATE dumps SET status='transcribing', attempts=2 WHERE id=?", (first,))
+        db.execute("UPDATE dumps SET status='transcribing', attempts=1 WHERE id=?", (second,))
+        db.commit()
+        gtd.requeue_interrupted(db)
+        status = {r["id"]: r["status"] for r in db.execute("SELECT id, status FROM dumps")}
+        self.assertEqual((status[first], status[second]), ("failed", "queued"))
+        out = self.c.get("/api/dumps").get_json()
+        self.assertEqual(out["pending"], 1)
+
+    def test_dumps_list_takes_only_a_sensible_count(self):
+        for n in ("abc", "-1", "0", "999"):
+            self.assertEqual(self.c.get(f"/api/dumps?n={n}").status_code, 200)
 
     def test_suggest_returns_the_notes_without_saving(self):
         with self.haiku(raw(body="Call Mom", new_tags=[{"type": "who", "name": "Mom"}]),

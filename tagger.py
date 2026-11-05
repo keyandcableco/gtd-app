@@ -24,7 +24,6 @@ import json
 import os
 
 MODEL = "claude-haiku-5-5"
-MAX_NOTES = 20  # one dump never files more than this
 
 TAG_TYPES = ["who", "what", "where"]
 KINDS = ["said", "project", "step"]
@@ -200,9 +199,9 @@ def _clean(raw, when_tags, tags):
 
 
 def to_notes(answer, when_tags, tags):
-    """Haiku's answer -> the notes to file (those with some text), at most MAX_NOTES."""
+    """Haiku's answer -> the notes to file (those with some text)."""
     notes = [_clean(n, when_tags, tags) for n in answer.get("notes") or [] if isinstance(n, dict)]
-    return [n for n in notes if n["body"]][:MAX_NOTES]
+    return [n for n in notes if n["body"]]
 
 
 def read(text, when_tags, tags, wait=35):

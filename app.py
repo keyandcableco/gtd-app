@@ -1,4 +1,4 @@
-import sqlite3, uuid, os, re, logging, threading
+import sqlite3, uuid, os, re, logging, threading, time
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template, g, send_file
 
@@ -78,7 +78,8 @@ def init_db():
             text TEXT NOT NULL DEFAULT '',
             reader TEXT NOT NULL DEFAULT '',
             note_ids TEXT NOT NULL DEFAULT '',
-            error TEXT NOT NULL DEFAULT ''
+            error TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -267,29 +268,38 @@ def note_line(n, maybe=True):
     return "; ".join(p for p in parts if p)
 
 
-def read_notes(db, text, wait):
+MAX_NOTES = 30       # one capture never files more; the rest stay in its words, and the dump says so
+RETRY_SECONDS = 30   # between Haiku tries for a recording (nobody's waiting on it)
+
+
+def read_notes(db, text, wait, tries=1):
     """([{body, note, when_tag, who, what, where}], reader): Haiku's notes in
     the text, or the text as one note by the "tag with ..." rules when Haiku
-    isn't set up, fails or finds nothing to file."""
-    try:
-        if tagger.available():
+    isn't set up, fails every try or finds nothing to file."""
+    for attempt in range(tries if tagger.available() else 0):
+        try:
             found = tagger.read(text, WHEN_TAGS, all_tags(db), wait=wait)
             if found:
                 return [dict(n, note=note_line(n)) for n in found], "haiku"
             log.warning("Haiku found no notes in a capture; filing it as one")
-    except Exception as e:  # never lose a capture: the rules take over
-        log.warning("Haiku couldn't read a capture, using the rules: %s", e)
+            break
+        except Exception as e:  # never lose a capture: the rules take over
+            log.warning("Haiku couldn't read a capture (try %d of %d): %s", attempt + 1, tries, e)
+            if attempt + 1 < tries:
+                time.sleep(RETRY_SECONDS)
     body, when, tags, leftover = parse_capture(db, text)
     note = ("unmatched tags: " + " ".join(leftover)) if leftover else ""
     return [{"body": body, "note": note, "when_tag": when, **tags}], "rules"
 
 
-def file_notes(db, text, wait):
-    """Read the text into notes and save them: (note ids, reader). Haiku is
-    asked before anything is written, so no write waits on it."""
-    notes, reader = read_notes(db, text, wait)
+def file_notes(db, text, wait, tries=1):
+    """Read the text into notes and write them, not yet committed: (note ids,
+    reader, how many were left out over MAX_NOTES). Haiku is asked before
+    anything is written, so no write waits on it, and the caller commits the
+    notes together with the dump that records them."""
+    notes, reader = read_notes(db, text, wait, tries)
     ids, ts = [], now_iso()
-    for n in notes:
+    for n in notes[:MAX_NOTES]:
         nid = str(uuid.uuid4())
         db.execute(
             "INSERT INTO notes(id, body, note, when_tag, created_at, updated_at, deleted) VALUES(?,?,?,?,?,?,0)",
@@ -297,8 +307,12 @@ def file_notes(db, text, wait):
         )
         set_note_tags(db, nid, n["who"], n["what"], n["where"])
         ids.append(nid)
-    db.commit()
-    return ids, reader
+    return ids, reader, len(notes) - len(ids)
+
+
+def left_out(dropped, kept):
+    return (f"Only the first {kept} of {kept + dropped} notes were filed; the rest are in the words above."
+            if dropped else "")
 
 
 def summarize(notes):
@@ -311,20 +325,21 @@ def summarize(notes):
     return line if len(line) <= 200 else line[:199] + "…"
 
 
-def add_dump(db, status, audio="", text="", reader="", note_ids=()):
+def add_dump(db, status, audio="", text="", reader="", note_ids=(), error=""):
+    """A dumps row, not yet committed."""
     did, ts = str(uuid.uuid4()), now_iso()
     db.execute(
-        "INSERT INTO dumps(id, created_at, updated_at, status, audio, text, reader, note_ids) VALUES(?,?,?,?,?,?,?,?)",
-        (did, ts, ts, status, audio, text, reader, ",".join(note_ids)),
+        "INSERT INTO dumps(id, created_at, updated_at, status, audio, text, reader, note_ids, error)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        (did, ts, ts, status, audio, text, reader, ",".join(note_ids), error),
     )
-    db.commit()
     return did
 
 
 def set_dump(db, did, **cols):
+    """Change a dumps row, not yet committed."""
     cols["updated_at"] = now_iso()
     db.execute(f"UPDATE dumps SET {', '.join(f'{k}=?' for k in cols)} WHERE id=?", (*cols.values(), did))
-    db.commit()
 
 
 @app.route("/api/capture", methods=["POST"])
@@ -338,8 +353,9 @@ def api_capture():
     if not text:
         return jsonify({"error": "empty"}), 400
     db = get_db()
-    ids, reader = file_notes(db, text, wait=35)
-    did = add_dump(db, "filed", text=text, reader=reader, note_ids=ids)
+    ids, reader, dropped = file_notes(db, text, wait=35)
+    did = add_dump(db, "filed", text=text, reader=reader, note_ids=ids, error=left_out(dropped, len(ids)))
+    db.commit()
     notes = [serialize_note(db, db.execute("SELECT * FROM notes WHERE id=?", (i,)).fetchone()) for i in ids]
     return jsonify({**notes[0], "notes": notes, "summary": summarize(notes), "reader": reader, "dump": did}), 201
 
@@ -356,7 +372,9 @@ def api_dump():
     """A recording, as the raw body (Tasker's HTTP Request with a file to
     send) or a multipart upload. Answers at once; the notes come once
     Whisper has written it out (a few minutes per minute of talk on the Pi)."""
-    upload = next(iter(request.files.values()), None)
+    # Only a multipart upload is parsed: touching request.files on any other
+    # body (a mislabelled form type, say) would use it up.
+    upload = next(iter(request.files.values()), None) if request.mimetype == "multipart/form-data" else None
     if upload:
         data, name, ctype = upload.read(), upload.filename or "", upload.mimetype
     else:
@@ -370,7 +388,9 @@ def api_dump():
     audio = f"{uuid.uuid4()}{ext}"
     with open(os.path.join(DUMPS_DIR, audio), "wb") as f:
         f.write(data)
-    did = add_dump(get_db(), "queued", audio=audio)
+    db = get_db()
+    did = add_dump(db, "queued", audio=audio)
+    db.commit()
     _wake.set()
     summary = ("Got it. Filing it once it's written out." if _worker_started else
                "Saved, but speech-to-text is off here, so it's waiting.")
@@ -382,8 +402,12 @@ def api_dumps():
     """The latest captures, newest first, with the notes each became (those
     not deleted since)."""
     db = get_db()
-    rows = db.execute("SELECT * FROM dumps ORDER BY created_at DESC LIMIT ?",
-                      (min(int(request.args.get("n", 5)), 50),)).fetchall()
+    try:
+        n = max(1, min(int(request.args.get("n", 5)), 50))
+    except ValueError:
+        n = 5
+    rows = db.execute("SELECT * FROM dumps ORDER BY created_at DESC LIMIT ?", (n,)).fetchall()
+    pending = db.execute("SELECT COUNT(*) FROM dumps WHERE status IN ('queued', 'transcribing')").fetchone()[0]
     out = []
     for r in rows:
         notes = []
@@ -394,29 +418,64 @@ def api_dumps():
         out.append({"id": r["id"], "created_at": r["created_at"], "status": r["status"],
                     "recording": bool(r["audio"]), "text": r["text"], "reader": r["reader"],
                     "error": r["error"], "notes": notes, "made": len(r["note_ids"].split(",")) if r["note_ids"] else 0})
-    return jsonify({"dumps": out, "speech_to_text": _worker_started})
+    return jsonify({"dumps": out, "pending": pending, "speech_to_text": _worker_started})
+
+
+@app.route("/api/dumps/<did>/retry", methods=["POST"])
+def retry_dump(did):
+    """Try a failed recording again (after a failed model download, say)."""
+    db = get_db()
+    cur = db.execute("UPDATE dumps SET status='queued', error='', attempts=0, updated_at=?"
+                     " WHERE id=? AND status='failed' AND audio != ''", (now_iso(), did))
+    db.commit()
+    if not cur.rowcount:
+        return jsonify({"error": "not a failed recording"}), 404
+    _wake.set()
+    return jsonify({"ok": True})
 
 
 def process_next_dump(db):
-    """Write out and file the oldest waiting recording. False when none is waiting."""
+    """Write out and file the oldest waiting recording. False when none is waiting.
+    The transcript is kept as soon as it's made, so a recording cut off while
+    Haiku reads it isn't written out again; its notes and its "filed" land in
+    one commit, so they can't be filed twice or half-filed."""
     row = db.execute("SELECT * FROM dumps WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
     if row is None:
         return False
     did = row["id"]
-    set_dump(db, did, status="transcribing", error="")
+    set_dump(db, did, status="transcribing", error="", attempts=row["attempts"] + 1)
+    db.commit()
     try:
-        text = transcribe.transcribe_file(os.path.join(DUMPS_DIR, row["audio"]),
-                                          transcribe.prompt_for(all_tags(db)))
+        text = row["text"]
         if not text:
-            set_dump(db, did, status="failed", error="Whisper heard no words in the recording")
-            return True
-        set_dump(db, did, text=text)
-        ids, reader = file_notes(db, text, wait=180)  # nobody's waiting: give Haiku time
-        set_dump(db, did, status="filed", reader=reader, note_ids=",".join(ids))
+            text = transcribe.transcribe_file(os.path.join(DUMPS_DIR, row["audio"]),
+                                              transcribe.prompt_for(all_tags(db)))
+            if not text:
+                set_dump(db, did, status="failed", error="Whisper heard no words in the recording")
+                db.commit()
+                return True
+            set_dump(db, did, text=text)
+            db.commit()
+        # Nobody's waiting: give Haiku time, and a few tries before the one-note fallback.
+        ids, reader, dropped = file_notes(db, text, wait=180, tries=3)
+        set_dump(db, did, status="filed", reader=reader, note_ids=",".join(ids), error=left_out(dropped, len(ids)))
+        db.commit()
     except Exception as e:
+        db.rollback()  # no half-filed notes
         log.exception("brain dump %s failed", did)
         set_dump(db, did, status="failed", error=str(e)[:300] or type(e).__name__)
+        db.commit()
     return True
+
+
+def requeue_interrupted(db):
+    """Recordings cut off mid-way by a restart go back in the queue, except one
+    that's already been cut off twice: it may be what's crashing the app (out
+    of memory, a bad file), so it waits for Try again."""
+    db.execute("UPDATE dumps SET status='failed', error=? WHERE status='transcribing' AND attempts >= 2",
+               ("Stopped twice while being written out (the app restarted or ran out of memory).",))
+    db.execute("UPDATE dumps SET status='queued' WHERE status='transcribing'")
+    db.commit()
 
 
 _wake = threading.Event()
@@ -447,8 +506,7 @@ def start_worker():
     if _worker_started or not transcribe.available():
         return
     db = connect()
-    db.execute("UPDATE dumps SET status='queued' WHERE status='transcribing'")  # cut off by a restart
-    db.commit()
+    requeue_interrupted(db)
     db.close()
     threading.Thread(target=_dump_worker, name="brain-dump-worker", daemon=True).start()
     _worker_started = True

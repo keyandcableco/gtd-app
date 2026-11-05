@@ -12,6 +12,8 @@ recordings off (they wait in the queue).
 faster-whisper is optional: without it the app runs normally and recordings
 just wait.
 """
+import gc
+import logging
 import os
 from pathlib import Path
 
@@ -19,16 +21,22 @@ APP_DIR = Path(__file__).resolve().parent
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "medium.en")
 WHISPER_DIR = Path(os.environ.get("WHISPER_DIR", APP_DIR / "whisper_models"))
 
+log = logging.getLogger("gtd.transcribe")
 _model = None
+_said_why = False
 
 
 def available():
+    global _said_why
     if WHISPER_MODEL == "off":
         return False
     try:
         import faster_whisper  # noqa: F401
         return True
-    except Exception:
+    except Exception as e:  # missing, or a broken wheel: say why once, recordings wait
+        if not _said_why:
+            log.warning("Recordings will wait: faster-whisper won't load (%s: %s)", type(e).__name__, e)
+            _said_why = True
         return False
 
 
@@ -47,7 +55,9 @@ def _get_model():
 def unload():
     """Let go of the model's memory until the next recording."""
     global _model
-    _model = None
+    if _model is not None:
+        _model = None
+        gc.collect()  # a failed run's traceback can hold the model in a reference cycle
 
 
 VOCABULARY = ["minichord", "Omnichord", "Key & Cable", "Teensy", "PCB", "JLC"]

@@ -385,16 +385,33 @@ el("#addAllBtn").addEventListener("click", async () => {
 });
 
 // ---- Recent captures: what was said or sent, and the notes it became ----
-// While a recording is still being written out, it checks again every 15 s.
-let dumpTimer = null;
+// While a recording is still being written out, it checks again every 15 s
+// (and keeps checking through a failed check). It opens itself once, on
+// load, if one is; after that it stays as you left it.
+let dumpTimer = null, pendingDumps = 0, dumpsLoaded = false;
 async function loadDumps() {
-  let res;
-  try { res = await (await fetch("/api/dumps")).json(); } catch (e) { return; }
+  clearTimeout(dumpTimer);
+  try {
+    const res = await (await fetch("/api/dumps")).json();
+    renderDumps(res);
+    if (res.pending && !dumpsLoaded) el("#dumpsCard").open = true;
+    if (pendingDumps && !res.pending) loadNotes();  // the last one was just filed
+    pendingDumps = res.pending;
+    dumpsLoaded = true;
+  } catch (e) { /* try again on the next round */ }
+  finally {
+    if (pendingDumps) dumpTimer = setTimeout(loadDumps, 15000);
+  }
+}
+async function retryDump(id) {
+  try { await fetch(`/api/dumps/${encodeURIComponent(id)}/retry`, {method: "POST"}); } catch (e) {}
+  pendingDumps = 1;
+  loadDumps();
+}
+function renderDumps(res) {
   const card = el("#dumpsCard"), list = el("#dumpsList");
   card.hidden = !res.dumps.length;
-  const pending = res.dumps.filter(d => d.status === "queued" || d.status === "transcribing").length;
-  el("#dumpsPending").textContent = pending ? `· ${pending} being written out` : "";
-  if (pending) card.open = true;
+  el("#dumpsPending").textContent = res.pending ? `· ${res.pending} being written out` : "";
   list.innerHTML = "";
   res.dumps.forEach(d => {
     const row = document.createElement("div");
@@ -407,13 +424,15 @@ async function loadDumps() {
     else status = `${d.made} note${d.made === 1 ? "" : "s"}` + (d.reader === "rules" ? " (without Haiku)" : "");
     row.innerHTML = `<div class="dmeta">${d.recording ? "Recording" : "Typed"} · ${escapeHtml(at)} · ${escapeHtml(status)}</div>
       ${d.text ? `<div class="dtext">${escapeHtml(d.text)}</div>` : ""}
-      ${d.notes.length ? `<div class="dnotes">→ ${d.notes.map(n => escapeHtml(n.body)).join(" · ")}</div>` : ""}`;
+      ${d.notes.length ? `<div class="dnotes">→ ${d.notes.map(n => escapeHtml(n.body)).join(" · ")}</div>` : ""}
+      ${d.status === "filed" && d.error ? `<div class="dmeta">${escapeHtml(d.error)}</div>` : ""}
+      ${d.status === "failed" && d.recording ? `<button class="ghost">Try again</button>` : ""}`;
     const t = row.querySelector(".dtext");
     if (t) t.onclick = () => t.classList.toggle("open");
+    const again = row.querySelector("button");
+    if (again) again.onclick = () => { again.disabled = true; retryDump(d.id); };
     list.appendChild(row);
   });
-  clearTimeout(dumpTimer);
-  if (pending) dumpTimer = setTimeout(async () => { await loadDumps(); loadNotes(); }, 15000);
 }
 function renderNewTags(list) {
   const box = el("#newTags"); box.innerHTML = "";
