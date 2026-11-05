@@ -11,6 +11,10 @@ Greg; GTD took over as the one list. Each unticked item becomes a note:
 - What: Haiku picks the project tags for each group's items (claude-haiku-5-5,
   one call a group), falling back to the group's usual tag.
 
+Meant to run once. A rerun skips every item already in GTD (open or done), so
+nothing Greg changed since is overwritten; --update sends them again, which
+overwrites his edits to them. A note he deleted would come back on a rerun.
+
   .venv/bin/python tools/import_open_loops.py PAGE.html TICKS_DIR [--url URL] [--dry-run]
 
 PAGE.html is the page as Artifact read saves it; TICKS_DIR holds its "ticks"
@@ -110,6 +114,7 @@ def main():
     ap.add_argument("ticks")
     ap.add_argument("--url", default=os.environ.get("GTD_URL", "http://100.81.145.49:8005"))
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--update", action="store_true", help="send items already in GTD again (overwrites edits)")
     a = ap.parse_args()
 
     done = set()
@@ -119,10 +124,12 @@ def main():
             done.add(os.path.basename(f)[:-5])
     existing = json.load(urllib.request.urlopen(a.url.rstrip("/") + "/api/tags", timeout=30))["what"]
     what_tags = sorted(set(existing) | set(PROJECT_TAGS))
+    have = set() if a.update else {n["ref"] for n in json.load(
+        urllib.request.urlopen(a.url.rstrip("/") + "/api/notes?done=all", timeout=30)) if n.get("ref")}
 
     filed = skipped = 0
     for group, sub, gnote, items in parse(open(a.page).read()):
-        todo = [i for i in items if i["id"] not in done]
+        todo = [i for i in items if i["id"] not in done and "openloops:" + i["id"] not in have]
         skipped += len(items) - len(todo)
         if not todo:
             continue
@@ -145,7 +152,7 @@ def main():
                                              headers={"Content-Type": "application/json"})
                 urllib.request.urlopen(req, timeout=30).read()
             filed += 1
-    print(f"{'would file' if a.dry_run else 'filed'} {filed} notes; {skipped} ticked-off items left out",
+    print(f"{'would file' if a.dry_run else 'filed'} {filed} notes; {skipped} ticked-off or already filed items left out",
           file=sys.stderr)
 
 

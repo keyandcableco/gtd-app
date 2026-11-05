@@ -314,6 +314,18 @@ class Routes(unittest.TestCase):
         self.assertEqual(self.notes(source="Tasker"), [])
         self.assertEqual(len(self.notes(q="0.12 mm")), 1)  # search covers details
 
+    def test_bad_input_is_refused_not_quietly_applied(self):
+        n = self.c.post("/api/notes", json={"body": "x", "when_tag": "next"}).get_json()
+        put = lambda body: self.c.put(f"/api/notes/{n['id']}", json=body)
+        self.assertEqual(put({"when_tag": "nxt"}).status_code, 400)
+        self.assertEqual(put({"done": "false"}).status_code, 400)
+        self.assertEqual(put({"what": "Minichord"}).status_code, 400)
+        self.assertEqual(self.c.post("/api/notes", json={"body": "y", "when_tag": "tomorrow"}).status_code, 400)
+        self.assertEqual(self.notes()[0]["when_tag"], "2-Next")  # untouched
+        self.assertIsNone(put({"when_tag": ""}).get_json()["when_tag"])  # "" clears it on purpose
+        self.c.post("/api/notes", json={"body": "z", "source": "Open Loops: x"})
+        self.assertEqual(self.notes(source="Open_Loops"), [])  # _ is a letter here, not a wildcard
+
     def test_captures_say_where_they_came_from(self):
         self.c.post("/api/capture", data="mow the lawn", content_type="text/plain")
         self.assertEqual(self.notes()[0]["source"], "Capture")

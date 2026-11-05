@@ -94,7 +94,10 @@ def init_db():
         ("ref", "TEXT NOT NULL DEFAULT ''"),       # a sender's own id, so sending it again updates it
     ):
         if col not in cols:
-            db.execute(f"ALTER TABLE notes ADD COLUMN {col} {decl}")
+            try:
+                db.execute(f"ALTER TABLE notes ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:  # another worker added it first
+                pass
     db.execute("CREATE INDEX IF NOT EXISTS notes_ref ON notes(ref) WHERE ref != ''")
     db.commit()
     db.close()
@@ -201,7 +204,7 @@ def api_notes():
     source = request.args.get("source")  # a prefix: "Claude" finds every session's
     if source:
         clauses.append("n.source LIKE ? ESCAPE '\\'")
-        params.append(source.replace("%", r"\%") + "%")
+        params.append(source.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
 
     sql = base + " WHERE " + " AND ".join(clauses)
     # sort: done ones newest first; open ones by When ascending (1..5), then newest first
@@ -218,13 +221,33 @@ def _text(data, key, default=""):
     return v.strip() if isinstance(v, str) else default
 
 
+class BadRequest(Exception):
+    pass
+
+
+@app.errorhandler(BadRequest)
+def bad_request(e):
+    return jsonify({"error": str(e)}), 400
+
+
 def _when(data):
-    """A When from the request, or None: "2-Next", or just "next"."""
+    """A When from the request: "2-Next", or just "next"; None for none
+    (null or ""). Anything else is refused, never quietly cleared."""
     w = data.get("when_tag")
-    if not isinstance(w, str) or not w.strip():
+    if w is None or (isinstance(w, str) and not w.strip()):
         return None
-    w = w.strip()
-    return w if w in WHEN_TAGS else next((x for x in WHEN_TAGS if _when_key(x) == w.lower()), None)
+    w = w.strip() if isinstance(w, str) else w
+    found = w if w in WHEN_TAGS else next((x for x in WHEN_TAGS if isinstance(w, str) and _when_key(x) == w.lower()), None)
+    if found is None:
+        raise BadRequest(f"unknown When {w!r}: use one of {', '.join(WHEN_TAGS)}")
+    return found
+
+
+def _tag_lists(data):
+    for t in TAG_TYPES:
+        v = data.get(t)
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            raise BadRequest(f"{t} must be a list of tag names")
 
 
 @app.route("/api/notes", methods=["POST"])
@@ -236,6 +259,7 @@ def create_note():
     data = request.get_json(force=True)
     if not isinstance(data, dict):
         return jsonify({"error": "send a JSON object"}), 400
+    _tag_lists(data)
     ref = _text(data, "ref")
     if ref:
         row = db.execute("SELECT id FROM notes WHERE ref=? AND deleted=0", (ref,)).fetchone()
@@ -590,6 +614,9 @@ def update_note(nid):
     row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
     if not row:
         return jsonify({"error": "not found"}), 404
+    _tag_lists(data)
+    if "done" in data and not isinstance(data["done"], bool):
+        raise BadRequest("done must be true or false")
     done_at = row["done_at"]
     if "done" in data:
         done_at = (done_at or now_iso()) if data["done"] else None
