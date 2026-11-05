@@ -30,20 +30,37 @@ just tap the microphone key on your phone keyboard inside the text box.
 
 ## Voice capture (Tasker or any HTTP client)
 
-`POST /api/capture` takes spoken text and files it as a note. End the sentence with
-"tag with ..." and the tag names are matched against the When values and your existing
-Who/What/Where tags:
+`POST /api/capture` takes spoken text and files it as a note:
 
 ```bash
 curl -X POST http://100.x.y.z:5001/api/capture \
   -H 'Content-Type: text/plain' \
-  -d 'order flex PCBs tag with Now and Workshop'
+  -d "pick up wood screws at Home Depot for the kids' shed this weekend"
 ```
 
 Send either a raw `text/plain` body (easiest, no JSON escaping) or `{"text": "..."}`.
-Names that don't match anything are kept in the note field as `unmatched tags: ...`
-rather than creating new tags; if nothing after "tag with" matches, the whole text
-is kept as the body. The response includes a one-line `summary` for a Tasker flash.
+The response includes a one-line `summary` for a Tasker flash, and `reader` says which
+of the two readers below filed it.
+
+**With an Anthropic API key** (`ANTHROPIC_API_KEY` in the app's environment), Claude
+Haiku reads the sentence the way you'd say it (`tagger.py`): it tidies the note, moves
+details to the note field, picks a When from what you said ("this weekend" is Next,
+"no rush" is Later; none if you didn't say), and picks Who/What/Where tags from the ones
+you already have. It never makes a new tag: a tag you ask for that doesn't exist, or a
+person or place that might make a good one, is added to the note field as
+`maybe tag: who Dad`. Only the note's text and your tag names go to Anthropic; a capture
+costs a small fraction of a cent and takes a second or two.
+
+**Without a key**, or whenever Haiku can't be reached, end the sentence with
+"tag with ..." and the tag names are matched against the When values and your existing
+tags (`order flex PCBs tag with Now and Workshop`). Names that don't match anything are
+kept in the note field as `unmatched tags: ...`; if nothing after "tag with" matches,
+the whole text is kept as the body.
+
+With a key the page also gets a **Tag it** button: Haiku reads the text box and fills in
+the form (tidied text, the note line and When where they're blank, and tags). Nothing is
+saved until you tap Add, and a tag that doesn't exist yet is offered as a dashed
+"+ who: Dad" chip you can tap to add it.
 
 ## Backup / grab a copy
 

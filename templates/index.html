@@ -55,6 +55,8 @@
           padding: 3px 8px 3px 10px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
   .chip b { font-weight: 400; }
   .chip .x { cursor: pointer; color: var(--muted); font-weight: 700; }
+  .chip.suggest { cursor: pointer; border-style: dashed; color: var(--muted); }
+  .chip.suggest i { font-style: normal; color: var(--accent); }
   .ac { position: absolute; z-index: 20; left: 0; right: 0; background: var(--panel2);
         border: 1px solid var(--line); border-top: none; border-radius: 0 0 8px 8px;
         max-height: 180px; overflow: auto; }
@@ -107,8 +109,12 @@
       {% endfor %}
     </div>
     <div id="tagInputs"></div>
+    <div class="chips" id="newTags"></div>
     <div class="actions">
-      <button class="primary" id="saveBtn">Add</button>
+      <div class="row">
+        <button class="primary" id="saveBtn">Add</button>
+        {% if haiku %}<button class="ghost" id="tagBtn" title="Haiku reads the text box and fills in the note, When and tags">Tag it</button>{% endif %}
+      </div>
       <button class="ghost" id="clearBtn" style="display:none">Cancel edit</button>
     </div>
   </div>
@@ -252,8 +258,53 @@ function resetForm() {
   el("#saveBtn").textContent = "Add";
   el("#clearBtn").style.display = "none";
   renderDraftChips();
+  renderNewTags([]);
 }
 el("#clearBtn").addEventListener("click", resetForm);
+
+// ---- Tag it: Haiku reads the text box and fills in the form ----
+// It tidies the text, fills the When and the note line only where they're
+// blank, and adds tags; nothing is saved until Add. A tag that isn't in the
+// tracker yet is offered as a dashed "+" chip to tap.
+const tagBtn = el("#tagBtn");
+if (tagBtn) tagBtn.addEventListener("click", tagIt);
+async function tagIt() {
+  const text = el("#body").value.trim();
+  if (!text || tagBtn.disabled) return;
+  const label = tagBtn.textContent;
+  tagBtn.disabled = true; tagBtn.textContent = "Reading…";
+  let res = null, err = "";
+  try {
+    const r = await fetch("/api/suggest", {method:"POST", headers:{"Content-Type":"application/json"},
+                                           body: JSON.stringify({text})});
+    res = await r.json();
+    if (!r.ok) err = res.error || `error ${r.status}`;
+  } catch (e) { err = "couldn't reach the tracker"; }
+  tagBtn.disabled = false; tagBtn.textContent = label;
+  if (err) { alert("Haiku couldn't tag it: " + err); return; }
+  if (el("#body").value.trim() !== text) return;  // changed while Haiku read it: leave it be
+  el("#body").value = res.body;
+  const note = el("#note"), had = note.value.trim();
+  if (res.note && !had.includes(res.note)) note.value = had ? `${had}; ${res.note}` : res.note;
+  if (res.when_tag && !selectedWhen) {
+    selectedWhen = res.when_tag;
+    el("#whenRow").querySelectorAll(".whenbtn").forEach(x =>
+      x.classList.toggle("sel", x.dataset.when === selectedWhen));
+  }
+  WHEN_TYPES.forEach(tt => res[tt].forEach(n => addChip(tt, n)));
+  renderNewTags(res.new_tags.filter(t => !draftTags[t.type].includes(t.name)));
+}
+function renderNewTags(list) {
+  const box = el("#newTags"); box.innerHTML = "";
+  list.forEach(t => {
+    const c = document.createElement("span");
+    c.className = "chip suggest";
+    c.title = "Not a tag yet: tap to add it";
+    c.innerHTML = `<b><i>+ ${t.type}:</i> ${escapeHtml(t.name)}</b>`;
+    c.onclick = () => { addChip(t.type, t.name); c.remove(); };
+    box.appendChild(c);
+  });
+}
 
 // ---- filters ----
 el("#search").addEventListener("input", e => { filter.q = e.target.value.trim(); loadNotes(); });
@@ -334,6 +385,7 @@ function startEdit(n) {
     x.classList.toggle("sel", x.dataset.when === n.when_tag));
   draftTags = {who:[...n.who], what:[...n.what], where:[...n.where]};
   renderDraftChips();
+  renderNewTags([]);
   el("#saveBtn").textContent = "Save";
   el("#clearBtn").style.display = "inline-block";
   window.scrollTo({top:0, behavior:"smooth"});

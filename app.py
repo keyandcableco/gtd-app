@@ -1,6 +1,10 @@
-import sqlite3, uuid, os, re
+import sqlite3, uuid, os, re, logging
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template, g, send_file
+
+import tagger
+
+log = logging.getLogger("gtd")
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("GTD_DB", os.path.join(APP_DIR, "gtd.db"))
@@ -110,19 +114,21 @@ def set_note_tags(db, note_id, who, what, where):
                 )
 
 
+def all_tags(db):
+    out = {t: [] for t in TAG_TYPES}
+    for r in db.execute("SELECT type, name FROM tags ORDER BY type, name").fetchall():
+        out[r["type"]].append(r["name"])
+    return out
+
+
 @app.route("/")
 def index():
-    return render_template("index.html", when_tags=WHEN_TAGS)
+    return render_template("index.html", when_tags=WHEN_TAGS, haiku=tagger.available())
 
 
 @app.route("/api/tags")
 def api_tags():
-    db = get_db()
-    rows = db.execute("SELECT type, name FROM tags ORDER BY type, name").fetchall()
-    out = {t: [] for t in TAG_TYPES}
-    for r in rows:
-        out[r["type"]].append(r["name"])
-    return jsonify(out)
+    return jsonify(all_tags(get_db()))
 
 
 @app.route("/api/notes")
@@ -223,6 +229,22 @@ def parse_capture(db, text):
     return body, when, tags, leftover
 
 
+def read_capture(db, text):
+    """(body, note, when_tag, {who,what,where}, reader): Haiku's reading of
+    the text, or the "tag with ..." rules when Haiku isn't set up or fails."""
+    if tagger.available():
+        try:
+            f = tagger.read(text, WHEN_TAGS, all_tags(db))
+            maybe = ", ".join(f"{t['type']} {t['name']}" for t in f["new_tags"])
+            note = "; ".join(p for p in (f["note"], maybe and "maybe tag: " + maybe) if p)
+            return f["body"], note, f["when_tag"], {t: f[t] for t in TAG_TYPES}, "haiku"
+        except Exception as e:  # never lose a capture: the rules take over
+            log.warning("Haiku couldn't read a capture, using the rules: %s", e)
+    body, when, tags, leftover = parse_capture(db, text)
+    note = ("unmatched tags: " + " ".join(leftover)) if leftover else ""
+    return body, note, when, tags, "rules"
+
+
 @app.route("/api/capture", methods=["POST"])
 def api_capture():
     """Accepts JSON {"text": ...} or a raw text/plain body (easiest from Tasker)."""
@@ -232,9 +254,8 @@ def api_capture():
     if not text:
         return jsonify({"error": "empty"}), 400
     db = get_db()
-    body, when, tags, leftover = parse_capture(db, text)
+    body, note, when, tags, reader = read_capture(db, text)
     nid, ts = str(uuid.uuid4()), now_iso()
-    note = ("unmatched tags: " + " ".join(leftover)) if leftover else ""
     db.execute(
         "INSERT INTO notes(id, body, note, when_tag, created_at, updated_at, deleted) VALUES(?,?,?,?,?,?,0)",
         (nid, body, note, when, ts, ts),
@@ -246,7 +267,22 @@ def api_capture():
     # short string for a Tasker flash
     labels = ([when] if when else []) + [n for t in TAG_TYPES for n in tags[t]]
     out["summary"] = f"{body} [{', '.join(labels)}]" if labels else body
+    out["reader"] = reader
     return jsonify(out), 201
+
+
+@app.route("/api/suggest", methods=["POST"])
+def api_suggest():
+    """The page's Tag it button: Haiku's reading of {"text": ...}, not saved."""
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip() if isinstance(data, dict) else ""
+    if not text:
+        return jsonify({"error": "empty"}), 400
+    try:
+        return jsonify(tagger.read(text, WHEN_TAGS, all_tags(get_db())))
+    except Exception as e:
+        log.warning("Haiku couldn't read the text box: %s", e)
+        return jsonify({"error": str(e)[:300] or type(e).__name__}), 503
 
 
 @app.route("/api/notes/<nid>", methods=["PUT"])

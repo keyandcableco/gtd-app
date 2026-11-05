@@ -1,2 +1,4 @@
 flask
 gunicorn
+# Claude Haiku reads captures and the Tag it button when ANTHROPIC_API_KEY is set (tagger.py).
+anthropic==2.4.0
