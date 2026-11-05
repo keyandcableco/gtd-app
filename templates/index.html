@@ -183,7 +183,7 @@ function showAC(inp) {
   });
   if (val && !allTags[tt].some(t => t.toLowerCase() === val)) {
     const d = document.createElement("div");
-    d.innerHTML = `<b>+ new:</b> ${inp.value.trim()}`;
+    d.innerHTML = `<b>+ new:</b> ${escapeHtml(inp.value.trim())}`;
     d.onmousedown = e => { e.preventDefault(); addChip(tt, inp.value.trim()); inp.value=""; hideAC(inp); };
     box.appendChild(d);
   }
@@ -208,7 +208,7 @@ function renderDraftChips() {
     draftTags[tt].forEach(name => {
       const c = document.createElement("span");
       c.className = "chip";
-      c.innerHTML = `<b>${name}</b><span class="x">×</span>`;
+      c.innerHTML = `<b>${escapeHtml(name)}</b><span class="x">×</span>`;
       c.querySelector(".x").onclick = () => {
         draftTags[tt] = draftTags[tt].filter(x => x !== name); renderDraftChips();
       };
@@ -319,7 +319,7 @@ function renderTagFilters() {
   WHEN_TYPES.forEach(tt => filter.tags[tt].forEach(name => {
     const c = document.createElement("span");
     c.className = "chip";
-    c.innerHTML = `<b><i>${tt}:</i> ${name}</b><span class="x">×</span>`;
+    c.innerHTML = `<b><i>${tt}:</i> ${escapeHtml(name)}</b><span class="x">×</span>`;
     c.querySelector(".x").onclick = () => {
       filter.tags[tt] = filter.tags[tt].filter(x => x !== name); renderTagFilters(); loadNotes();
     };
@@ -354,7 +354,7 @@ function renderNotes(notes) {
     const badges = [];
     if (n.when_tag) badges.push(`<span class="whenbadge" style="background:var(--w${whenNum(n.when_tag)})">${n.when_tag}</span>`);
     WHEN_TYPES.forEach(tt => n[tt].forEach(name =>
-      badges.push(`<span class="tagbadge" data-tt="${tt}" data-name="${encodeURIComponent(name)}"><i>${tt[0]}</i> ${name}</span>`)));
+      badges.push(`<span class="tagbadge" data-tt="${tt}" data-name="${encodeURIComponent(name)}"><i>${tt[0]}</i> ${escapeHtml(name)}</span>`)));
     card.innerHTML = `
       <div class="body">${escapeHtml(n.body) || "<span style='color:var(--muted)'>(no text)</span>"}</div>
       ${n.note ? `<div class="notetext">${escapeHtml(n.note)}</div>` : ""}

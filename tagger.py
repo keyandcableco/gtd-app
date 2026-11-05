@@ -17,7 +17,11 @@ import json
 import os
 
 MODEL = "claude-haiku-5-5"
-TIMEOUT_SECONDS = 15  # Tasker or the page is waiting, on the app's one gunicorn worker
+# Tasker or the page is waiting, on the app's one gunicorn worker. The SDK
+# applies this to each step (connect, send, reply) and the DNS lookup isn't
+# covered at all, so a sick network can take several times this: the
+# Dockerfile gives gunicorn 90 s, so the fallback still files the capture.
+TIMEOUT_SECONDS = 10
 
 TAG_TYPES = ["who", "what", "where"]
 
@@ -44,7 +48,7 @@ def available():
     try:
         import anthropic  # noqa: F401
         return True
-    except ImportError:
+    except Exception:  # missing, or a broken install: the page and capture carry on without it
         return False
 
 
@@ -135,22 +139,23 @@ def _ask_haiku(text, when_tags, tags):
 def to_fields(answer, text, when_tags, tags):
     """Haiku's answer -> the tracker's fields, keeping only Whens and tags that exist."""
     def known(t, names):
-        by_lower = {n.lower(): n for n in tags.get(t) or []}
+        have = tags.get(t) or []
+        by_lower = {n.lower(): n for n in have}
         out = []
         for name in names or []:
-            n = by_lower.get(str(name).strip().lower())
+            name = str(name).strip()
+            n = name if name in have else by_lower.get(name.lower())  # "Home" before "home"
             if n and n not in out:
                 out.append(n)
         return out
 
     fields = {t: known(t, answer.get(t)) for t in TAG_TYPES}
-    existing = {n.lower() for t in TAG_TYPES for n in tags.get(t) or []}
     new_tags = []
     for nt in answer.get("new_tags") or []:
-        name = " ".join(str(nt.get("name", "")).split())
-        if nt.get("type") in TAG_TYPES and name and name.lower() not in existing \
-                and name.lower() not in {x["name"].lower() for x in new_tags}:
-            new_tags.append({"type": nt["type"], "name": name})
+        t, name = nt.get("type"), " ".join(str(nt.get("name", "")).split())
+        if t in TAG_TYPES and name and name.lower() not in {n.lower() for n in tags.get(t) or []} \
+                and (t, name.lower()) not in {(x["type"], x["name"].lower()) for x in new_tags}:
+            new_tags.append({"type": t, "name": name})
     when = answer.get("when")
     return {
         "body": " ".join(str(answer.get("body", "")).split()) or text,

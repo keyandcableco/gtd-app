@@ -232,14 +232,14 @@ def parse_capture(db, text):
 def read_capture(db, text):
     """(body, note, when_tag, {who,what,where}, reader): Haiku's reading of
     the text, or the "tag with ..." rules when Haiku isn't set up or fails."""
-    if tagger.available():
-        try:
+    try:
+        if tagger.available():
             f = tagger.read(text, WHEN_TAGS, all_tags(db))
             maybe = ", ".join(f"{t['type']} {t['name']}" for t in f["new_tags"])
             note = "; ".join(p for p in (f["note"], maybe and "maybe tag: " + maybe) if p)
             return f["body"], note, f["when_tag"], {t: f[t] for t in TAG_TYPES}, "haiku"
-        except Exception as e:  # never lose a capture: the rules take over
-            log.warning("Haiku couldn't read a capture, using the rules: %s", e)
+    except Exception as e:  # never lose a capture: the rules take over
+        log.warning("Haiku couldn't read a capture, using the rules: %s", e)
     body, when, tags, leftover = parse_capture(db, text)
     note = ("unmatched tags: " + " ".join(leftover)) if leftover else ""
     return body, note, when, tags, "rules"
@@ -250,7 +250,7 @@ def api_capture():
     """Accepts JSON {"text": ...} or a raw text/plain body (easiest from Tasker)."""
     data = request.get_json(silent=True)
     text = data.get("text", "") if isinstance(data, dict) else request.get_data(as_text=True)
-    text = (text or "").strip()
+    text = text.strip() if isinstance(text, str) else ""
     if not text:
         return jsonify({"error": "empty"}), 400
     db = get_db()
@@ -274,8 +274,9 @@ def api_capture():
 @app.route("/api/suggest", methods=["POST"])
 def api_suggest():
     """The page's Tag it button: Haiku's reading of {"text": ...}, not saved."""
-    data = request.get_json(silent=True) or {}
-    text = (data.get("text") or "").strip() if isinstance(data, dict) else ""
+    data = request.get_json(silent=True)
+    text = data.get("text") if isinstance(data, dict) else ""
+    text = text.strip() if isinstance(text, str) else ""
     if not text:
         return jsonify({"error": "empty"}), 400
     try:

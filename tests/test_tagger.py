@@ -39,6 +39,15 @@ class ToFields(unittest.TestCase):
         self.assertEqual(f["where"], [])
         self.assertEqual(tagger.to_fields(answer(when="6-Never"), "x", WHEN, TAGS)["when_tag"], None)
 
+    def test_an_exact_name_wins_over_one_that_differs_by_case(self):
+        tags = {"where": ["Home", "home"]}
+        self.assertEqual(tagger.to_fields(answer(where=["Home"]), "x", WHEN, tags)["where"], ["Home"])
+        self.assertEqual(tagger.to_fields(answer(where=["home"]), "x", WHEN, tags)["where"], ["home"])
+
+    def test_a_new_tag_is_checked_against_its_own_type(self):
+        f = tagger.to_fields(answer(new_tags=[{"type": "who", "name": "Workshop"}]), "x", WHEN, TAGS)
+        self.assertEqual(f["new_tags"], [{"type": "who", "name": "Workshop"}])
+
     def test_new_tags_never_repeat_existing_ones(self):
         f = tagger.to_fields(answer(body="x", new_tags=[{"type": "who", "name": "Dad"},
                                                         {"type": "who", "name": "dad"},
@@ -116,10 +125,19 @@ class Routes(unittest.TestCase):
         self.assertEqual((out["body"], out["new_tags"]), ("Call Mom", [{"type": "who", "name": "Mom"}]))
         self.assertEqual(self.notes(), [])
 
+    def test_capture_still_files_it_when_the_sdk_is_broken(self):
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test"}), \
+                mock.patch.dict(sys.modules, {"anthropic": None}):  # import raises
+            out = self.c.post("/api/capture", data="mow the lawn", content_type="text/plain").get_json()
+            self.assertNotIn(b'id="tagBtn"', self.c.get("/").data)
+        self.assertEqual((out["reader"], out["body"]), ("rules", "mow the lawn"))
+
     def test_suggest_says_why_it_couldnt(self):
         r = self.c.post("/api/suggest", json={"text": "call mom"})
         self.assertEqual((r.status_code, r.get_json()["error"]), (503, "no Anthropic API key set"))
         self.assertEqual(self.c.post("/api/suggest", json={"text": "  "}).status_code, 400)
+        self.assertEqual(self.c.post("/api/suggest", json={"text": 123}).status_code, 400)
+        self.assertEqual(self.c.post("/api/capture", json={"text": 123}).status_code, 400)
 
     def test_tag_it_button_shows_only_with_a_key(self):
         self.assertNotIn(b'id="tagBtn"', self.c.get("/").data)
