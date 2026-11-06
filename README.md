@@ -117,6 +117,17 @@ with the `gtd` command (`~/.local/bin/gtd` on the laptop, over Tailscale): `gtd 
 /api/notes` takes `done=0|1|all` and `source=` (a prefix). `tools/import_open_loops.py`
 moved the Open Loops page's open items in on 2026-11-05.
 
+## Today
+
+`/today` is the day's short list: 9 to 12 notes picked from the tracker each morning at 5
+(a Claude scheduled task), in three parts (Needs attention, One step per project,
+Ten-minute wins), each with a line on why it's on today's list. Ticking one there ticks the
+note. The page checks for a new list every minute, so it can stay open all day; on the
+laptop, `~/.local/bin/today-window` pins it beside the camera feed. `gtd today` prints the
+list and `gtd today set FILE.json` replaces a day's list; underneath, `GET /api/today`
+(`?day=YYYY-MM-DD`, the newest by default) and `PUT /api/today/<day>` with `{"headline",
+"items": [{"section": "attention"|"step"|"quick", "note_id", "title", "why"}]}`.
+
 ## Backup / grab a copy
 
 The **⬇ backup db** link (or `GET /api/export`) downloads the live `gtd.db`.

@@ -81,6 +81,23 @@ def init_db():
             error TEXT NOT NULL DEFAULT '',
             attempts INTEGER NOT NULL DEFAULT 0
         );
+        -- The day's short list (the 5 AM brief): notes picked from the
+        -- tracker, in order, each with why it's on today's list. Sending a
+        -- day again replaces its list.
+        CREATE TABLE IF NOT EXISTS today_days (
+            day TEXT PRIMARY KEY,
+            headline TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS today_items (
+            day TEXT NOT NULL REFERENCES today_days(day) ON DELETE CASCADE,
+            pos INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT '',
+            why TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (day, pos)
+        );
         """
     )
     # migrate older DBs that predate a column
@@ -633,6 +650,80 @@ def update_note(nid):
     db.commit()
     row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
     return jsonify(serialize_note(db, row))
+
+
+# ---- Today: the day's short list, picked each morning ----
+TODAY_SECTIONS = [("attention", "Needs attention"), ("step", "One step per project"), ("quick", "Ten-minute wins")]
+DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+DAY_RANGE = 31  # a list more than a month from today is a typo, and would shadow every real one
+
+
+@app.route("/today")
+def today_page():
+    return render_template("today.html")
+
+
+def today_list(db, day=None):
+    """A day's list, or the newest one. Each item carries its note, ticks and
+    all; a note deleted since drops out."""
+    row = (db.execute("SELECT * FROM today_days WHERE day=?", (day,)).fetchone() if day else
+           db.execute("SELECT * FROM today_days ORDER BY day DESC LIMIT 1").fetchone())
+    if row is None:
+        return {"day": None, "headline": "", "sections": []}
+    sections = []
+    for key, label in TODAY_SECTIONS:
+        items = []
+        for it in db.execute(
+                "SELECT i.title, i.why, n.* FROM today_items i JOIN notes n ON n.id = i.note_id"
+                " WHERE i.day=? AND i.section=? AND n.deleted=0 ORDER BY i.pos", (row["day"], key)):
+            items.append({**serialize_note(db, it), "title": it["title"] or it["body"], "why": it["why"]})
+        if items:
+            sections.append({"key": key, "label": label, "items": items})
+    return {"day": row["day"], "headline": row["headline"], "updated_at": row["updated_at"], "sections": sections}
+
+
+@app.route("/api/today")
+def api_today():
+    """?day=YYYY-MM-DD for that day's list; the newest one without it."""
+    return jsonify(today_list(get_db(), request.args.get("day")))
+
+
+@app.route("/api/today/<day>", methods=["PUT"])
+def set_today(day):
+    """Replace a day's list: {"headline": ..., "items": [{"section": "attention"
+    | "step" | "quick", "note_id": <a whole note id>, "title": short, optional,
+    "why": one line}]}. Every item must be a note in the tracker."""
+    try:
+        when = datetime.strptime(day, "%Y-%m-%d").date() if DAY_RE.fullmatch(day) else None
+    except ValueError:
+        when = None
+    if when is None:
+        raise BadRequest("day must be a real date, YYYY-MM-DD")
+    if abs((when - datetime.now().date()).days) > DAY_RANGE:
+        raise BadRequest(f"day must be within {DAY_RANGE} days of today")
+    data = request.get_json(force=True)
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list) or not data["items"]:
+        raise BadRequest('send {"headline": ..., "items": [...]} with at least one item')
+    db = get_db()
+    keys = [k for k, _ in TODAY_SECTIONS]
+    rows = []
+    for i, it in enumerate(data["items"]):
+        if not isinstance(it, dict):
+            raise BadRequest(f"item {i + 1} isn't an object")
+        if it.get("section") not in keys:
+            raise BadRequest(f"item {i + 1}: section must be one of {', '.join(keys)}")
+        nid = it.get("note_id")
+        if not isinstance(nid, str) or not db.execute(
+                "SELECT 1 FROM notes WHERE id=? AND deleted=0", (nid,)).fetchone():
+            raise BadRequest(f"item {i + 1}: no note {nid!r} in the tracker")
+        rows.append((day, i, it["section"], nid, _text(it, "title"), _text(it, "why")))
+    db.execute("DELETE FROM today_items WHERE day=?", (day,))
+    db.execute("INSERT INTO today_days(day, headline, updated_at) VALUES(?,?,?)"
+               " ON CONFLICT(day) DO UPDATE SET headline=excluded.headline, updated_at=excluded.updated_at",
+               (day, _text(data, "headline"), now_iso()))
+    db.executemany("INSERT INTO today_items(day, pos, section, note_id, title, why) VALUES(?,?,?,?,?,?)", rows)
+    db.commit()
+    return jsonify(today_list(db, day))
 
 
 @app.route("/api/notes/<nid>", methods=["DELETE"])
