@@ -117,6 +117,12 @@ with the `gtd` command (`~/.local/bin/gtd` on the laptop, over Tailscale): `gtd 
 /api/notes` takes `done=0|1|all` and `source=` (a prefix). `tools/import_open_loops.py`
 moved the Open Loops page's open items in on 2026-11-05.
 
+A note can also carry a day (`on_day`, `YYYY-MM-DD`; `""` or `null` clears it), GTD's
+tickler file: `gtd add ... --on 2026-11-09` keeps it out of `gtd list` until that day,
+and the morning list puts it under Needs attention that day. `gtd list --dated` shows
+the dated ones, soonest first. Only a day, no time: a time of day goes on the shop's
+Glance clock. The page doesn't show or set days yet, and editing a note there keeps its day.
+
 ## Today
 
 `/today` is the day's short list: 9 to 12 notes picked from the tracker each morning at 5

@@ -1,8 +1,10 @@
-"""Today: the day's short list (/api/today, /today).
+"""Today: the day's short list (/api/today, /today), and a note's day
+(on_day, GTD's tickler) that puts it on the list.
 
 Run from the repo folder:  .venv/bin/python -m unittest discover tests
 """
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -97,6 +99,83 @@ class Today(unittest.TestCase):
         r = self.c.get("/today")
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Today", r.data)
+
+
+class OnDay(unittest.TestCase):
+    def setUp(self):
+        self.c = gtd.app.test_client()
+
+    def note(self, **kw):
+        r = self.c.post("/api/notes", json={"body": "John picks up the Juno", **kw})
+        self.assertEqual(r.status_code, 201, r.get_json())
+        return r.get_json()
+
+    def get(self, nid):
+        return next(n for n in self.c.get("/api/notes?done=all").get_json() if n["id"] == nid)
+
+    def put(self, nid, **kw):
+        return self.c.put(f"/api/notes/{nid}", json=kw)
+
+    def test_none_by_default(self):
+        self.assertIsNone(self.note()["on_day"])
+
+    def test_set_and_listed(self):
+        n = self.note(on_day=" 2026-11-09 ")
+        self.assertEqual(n["on_day"], "2026-11-09")
+        self.assertEqual(self.get(n["id"])["on_day"], "2026-11-09")  # the server hides nothing: gtd list does
+
+    def test_page_edit_keeps_the_day(self):
+        n = self.note(on_day="2026-11-09")
+        r = self.put(n["id"], body="John picks up the Juno Monday", note="", details="", when_tag="2-Next",
+                     who=["John"], what=[], where=[])  # what the page sends
+        self.assertEqual(r.get_json()["on_day"], "2026-11-09")
+        self.assertEqual(self.put(n["id"], done=True).get_json()["on_day"], "2026-11-09")
+
+    def test_change_and_clear(self):
+        n = self.note(on_day="2026-11-09")
+        self.assertEqual(self.put(n["id"], on_day="2026-11-10").get_json()["on_day"], "2026-11-10")
+        self.assertIsNone(self.put(n["id"], on_day="").get_json()["on_day"])
+        self.put(n["id"], on_day="2026-11-10")
+        self.assertIsNone(self.put(n["id"], on_day=None).get_json()["on_day"])
+
+    def test_ref_again_updates_the_day(self):
+        n = self.note(ref="test:juno", on_day="2026-11-09")
+        r = self.c.post("/api/notes", json={"body": "John picks up the Juno", "ref": "test:juno", "on_day": "2026-11-11"})
+        self.assertEqual((r.get_json()["id"], r.get_json()["on_day"]), (n["id"], "2026-11-11"))
+
+    def test_refusals_change_nothing(self):
+        n = self.note(on_day="2026-11-09")
+        for bad in ("Mon Nov 9", "2026-02-31", "20261109", "2026-11-9", "٢٠٢٦-11-09",
+                    20261109, ["2026-11-09"]):
+            self.assertEqual(self.put(n["id"], on_day=bad, body="changed").status_code, 400, bad)
+            self.assertEqual(self.c.post("/api/notes", json={"body": "x", "on_day": bad}).status_code, 400, bad)
+        self.assertEqual((self.get(n["id"])["on_day"], self.get(n["id"])["body"]), ("2026-11-09", "John picks up the Juno"))
+
+    def test_on_the_today_list(self):
+        n = self.note(on_day=D0)
+        self.c.put(f"/api/today/{D0}", json={"headline": "Juno day, Greg.",
+                                            "items": [{"section": "attention", "note_id": n["id"]}]})
+        item = self.c.get(f"/api/today?day={D0}").get_json()["sections"][0]["items"][0]
+        self.assertEqual(item["on_day"], D0)
+
+    def test_older_database_gets_the_column(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            db = sqlite3.connect(path)
+            db.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT NOT NULL DEFAULT '', note TEXT NOT NULL"
+                       " DEFAULT '', when_tag TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                       " deleted INTEGER NOT NULL DEFAULT 0)")
+            db.execute("INSERT INTO notes(id, body, created_at, updated_at) VALUES('old', 'kept', 'x', 'x')")
+            db.commit()
+            db.close()
+            was, gtd.DB_PATH = gtd.DB_PATH, path
+            try:
+                gtd.init_db()
+            finally:
+                gtd.DB_PATH = was
+            db = sqlite3.connect(path)
+            self.assertEqual(db.execute("SELECT body, on_day FROM notes").fetchone(), ("kept", None))
+            db.close()
 
 
 if __name__ == "__main__":

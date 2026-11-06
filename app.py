@@ -109,6 +109,7 @@ def init_db():
         ("done_at", "TEXT"),                       # ticked off; NULL while open
         ("source", "TEXT NOT NULL DEFAULT ''"),    # where it came from: "Claude: <session>", "Open Loops: ..."
         ("ref", "TEXT NOT NULL DEFAULT ''"),       # a sender's own id, so sending it again updates it
+        ("on_day", "TEXT"),                        # the day it comes up (GTD's tickler), YYYY-MM-DD; NULL for none
     ):
         if col not in cols:
             try:
@@ -152,6 +153,7 @@ def serialize_note(db, row):
         "done_at": row["done_at"],
         "source": row["source"],
         "ref": row["ref"],
+        "on_day": row["on_day"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         **grouped,
@@ -260,6 +262,31 @@ def _when(data):
     return found
 
 
+DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def parse_day(s):
+    """The date in "YYYY-MM-DD", or None when it isn't a real one."""
+    if not isinstance(s, str) or not DAY_RE.fullmatch(s):
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _on_day(data):
+    """A note's day from the request: "YYYY-MM-DD"; None for none (null or
+    ""). Anything else is refused, never quietly cleared."""
+    d = data.get("on_day")
+    if d is None or (isinstance(d, str) and not d.strip()):
+        return None
+    d = d.strip() if isinstance(d, str) else d
+    if parse_day(d) is None:
+        raise BadRequest(f"on_day must be a real date, YYYY-MM-DD (or empty for none), not {d!r}")
+    return d
+
+
 def _tag_lists(data):
     for t in TAG_TYPES:
         v = data.get(t)
@@ -285,9 +312,9 @@ def create_note():
     nid = data.get("id") if isinstance(data.get("id"), str) and data.get("id") else str(uuid.uuid4())
     ts = now_iso()
     db.execute(
-        "INSERT INTO notes(id, body, note, details, when_tag, source, ref, created_at, updated_at, deleted)"
-        " VALUES(?,?,?,?,?,?,?,?,?,0)",
-        (nid, _text(data, "body"), _text(data, "note"), _text(data, "details"), _when(data),
+        "INSERT INTO notes(id, body, note, details, when_tag, on_day, source, ref, created_at, updated_at, deleted)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,0)",
+        (nid, _text(data, "body"), _text(data, "note"), _text(data, "details"), _when(data), _on_day(data),
          _text(data, "source"), ref, ts, ts),
     )
     set_note_tags(db, nid, data.get("who"), data.get("what"), data.get("where"))
@@ -622,8 +649,9 @@ def api_suggest():
 
 @app.route("/api/notes/<nid>", methods=["PUT"])
 def update_note(nid):
-    """Change a note: only the fields sent change (the page sends them all).
-    "done": true ticks it off, false opens it again."""
+    """Change a note: only the fields sent change (the page sends all but
+    on_day, so editing there keeps a note's day). "done": true ticks it off,
+    false opens it again."""
     db = get_db()
     data = request.get_json(force=True)
     if not isinstance(data, dict):
@@ -638,10 +666,11 @@ def update_note(nid):
     if "done" in data:
         done_at = (done_at or now_iso()) if data["done"] else None
     db.execute(
-        "UPDATE notes SET body=?, note=?, details=?, when_tag=?, source=?, done_at=?, updated_at=? WHERE id=?",
+        "UPDATE notes SET body=?, note=?, details=?, when_tag=?, on_day=?, source=?, done_at=?, updated_at=? WHERE id=?",
         (_text(data, "body", row["body"]), _text(data, "note", row["note"]),
          _text(data, "details", row["details"]),
          _when(data) if "when_tag" in data else row["when_tag"],
+         _on_day(data) if "on_day" in data else row["on_day"],
          _text(data, "source", row["source"]), done_at, now_iso(), nid),
     )
     if any(t in data for t in TAG_TYPES):
@@ -654,7 +683,6 @@ def update_note(nid):
 
 # ---- Today: the day's short list, picked each morning ----
 TODAY_SECTIONS = [("attention", "Needs attention"), ("step", "One step per project"), ("quick", "Ten-minute wins")]
-DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 DAY_RANGE = 31  # a list more than a month from today is a typo, and would shadow every real one
 
 
@@ -693,10 +721,7 @@ def set_today(day):
     """Replace a day's list: {"headline": ..., "items": [{"section": "attention"
     | "step" | "quick", "note_id": <a whole note id>, "title": short, optional,
     "why": one line}]}. Every item must be a note in the tracker."""
-    try:
-        when = datetime.strptime(day, "%Y-%m-%d").date() if DAY_RE.fullmatch(day) else None
-    except ValueError:
-        when = None
+    when = parse_day(day)
     if when is None:
         raise BadRequest("day must be a real date, YYYY-MM-DD")
     if abs((when - datetime.now().date()).days) > DAY_RANGE:
