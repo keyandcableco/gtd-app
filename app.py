@@ -68,7 +68,7 @@ TODAY_TABLES = """
 
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=30)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS notes (
@@ -109,9 +109,13 @@ def init_db():
         """ + TODAY_TABLES
     )
     # Today lists got a slot (the morning's and the night's) on 2026-11-06:
-    # an older database's two tables are rebuilt with it, one worker at a time.
-    db.execute("BEGIN IMMEDIATE")
-    if "slot" not in [r[1] for r in db.execute("PRAGMA table_info(today_days)").fetchall()]:
+    # an older database's two tables are rebuilt with it, one worker at a time
+    # (the check again under the lock: another worker may have just done it).
+    def has_slot():
+        return "slot" in [r[1] for r in db.execute("PRAGMA table_info(today_days)").fetchall()]
+    if not has_slot():
+        db.execute("BEGIN IMMEDIATE")
+    if db.in_transaction and not has_slot():
         db.execute("ALTER TABLE today_items RENAME TO today_items_old")
         db.execute("ALTER TABLE today_days RENAME TO today_days_old")
         for stmt in TODAY_TABLES.split(";"):
