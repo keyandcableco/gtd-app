@@ -126,13 +126,18 @@ Glance clock. The page doesn't show or set days yet, and editing a note there ke
 ## Today
 
 `/today` is the day's short list: 9 to 12 notes picked from the tracker each morning at 5
-(a Claude scheduled task), in three parts (Needs attention, One step per project,
-Ten-minute wins), each with a line on why it's on today's list. Ticking one there ticks the
-note. The page checks for a new list every minute, so it can stay open all day; on the
-laptop, `~/.local/bin/today-window` pins it beside the camera feed. `gtd today` prints the
-list and `gtd today set FILE.json` replaces a day's list; underneath, `GET /api/today`
-(`?day=YYYY-MM-DD`, the newest by default) and `PUT /api/today/<day>` with `{"headline",
-"items": [{"section": "attention"|"step"|"quick", "note_id", "title", "why"}]}`.
+(a Claude scheduled task), in parts (Needs attention, One step per project, Ten-minute
+wins), each with a line on why it's on today's list. At 8 PM a second task picks the
+night's list for the quiet hours at the desk, once the kids are asleep (no calls, errands
+or noisy bench work; a Clean-up and housekeeping part for accounts, tokens and files),
+and the page shows it as Tonight until the next morning's arrives. Ticking one there
+ticks the note. The page checks for a new list every minute, so it can stay open all
+day; on the laptop, `~/.local/bin/today-window` (Super+Shift+T) pins it beside the
+camera feed. `gtd today [--night]` prints the list and `gtd today set FILE.json`
+replaces a day's list; underneath, `GET /api/today` (`?day=YYYY-MM-DD` for that day's
+morning list, `&slot=night` for its night's; the newest of all by default) and `PUT
+/api/today/<day>` (or `/api/today/<day>/night`) with `{"headline", "items": [{"section":
+"attention"|"step"|"cleanup"|"quick", "note_id", "title", "why"}]}`.
 
 ## Backup / grab a copy
 

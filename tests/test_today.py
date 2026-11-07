@@ -1,4 +1,4 @@
-"""Today: the day's short list (/api/today, /today), and a note's day
+"""Today: the day's short list and the night's (/api/today, /today), and a note's day
 (on_day, GTD's tickler) that puts it on the list.
 
 Run from the repo folder:  .venv/bin/python -m unittest discover tests
@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from datetime import date, timedelta
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -94,6 +95,51 @@ class Today(unittest.TestCase):
         self.assertEqual(self.c.put(f"/api/today/{D0}", json={"headline": "x"}).status_code, 400)
         res = self.c.get("/api/today").get_json()
         self.assertEqual(res["sections"][0]["items"][0]["id"], self.a)
+
+    def test_night_beside_the_day(self):
+        self.put(D0, [{"section": "attention", "note_id": self.a}])
+        r = self.c.put(f"/api/today/{D0}/night", json={"headline": "Quiet hours",
+                                                      "items": [{"section": "cleanup", "note_id": self.b}]})
+        self.assertEqual(r.status_code, 200)
+        res = self.c.get("/api/today").get_json()  # the night's is the newest
+        self.assertEqual((res["day"], res["slot"], res["label"]), (D0, "night", "Tonight"))
+        self.assertEqual([s["label"] for s in res["sections"]], ["Clean-up and housekeeping"])
+        day = self.c.get(f"/api/today?day={D0}").get_json()  # its morning's, untouched
+        self.assertEqual((day["slot"], day["headline"], day["sections"][0]["items"][0]["id"]),
+                         ("day", "Twelve days, Greg.", self.a))
+        self.assertEqual(self.c.get(f"/api/today?day={D0}&slot=night").get_json()["headline"], "Quiet hours")
+        self.put(D1, [{"section": "quick", "note_id": self.b}])
+        self.assertEqual(self.c.get("/api/today?slot=day").get_json()["day"], D0)
+        self.assertEqual(self.c.put(f"/api/today/{D0}/evening", json={"items": [
+            {"section": "quick", "note_id": self.b}]}).status_code, 400)
+        self.assertEqual(self.c.get("/api/today?slot=evening").status_code, 400)
+
+    def test_old_database_gets_the_slot(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        old = os.path.join(tmp.name, "old.db")
+        db = sqlite3.connect(old)
+        db.executescript("""
+            CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+                when_tag TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE today_days (day TEXT PRIMARY KEY, headline TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
+            CREATE TABLE today_items (day TEXT NOT NULL REFERENCES today_days(day) ON DELETE CASCADE,
+                pos INTEGER NOT NULL, section TEXT NOT NULL, note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '', why TEXT NOT NULL DEFAULT '', PRIMARY KEY (day, pos));
+            INSERT INTO notes(id, body, created_at, updated_at) VALUES ('n1', 'Send the DR-1', 'x', 'x');
+            INSERT INTO today_days VALUES ('2026-11-06', 'Twelve days', 'x');
+            INSERT INTO today_items VALUES ('2026-11-06', 0, 'attention', 'n1', '', 'due Nov 18');
+        """)
+        db.commit()
+        db.close()
+        with mock.patch.object(gtd, "DB_PATH", old):
+            gtd.init_db()
+            gtd.init_db()  # a second worker finds it done
+            db = gtd.connect()
+            res = gtd.today_list(db)
+            db.close()
+        self.assertEqual((res["day"], res["slot"], res["headline"]), ("2026-11-06", "day", "Twelve days"))
+        self.assertEqual(res["sections"][0]["items"][0]["why"], "due Nov 18")
 
     def test_page(self):
         r = self.c.get("/today")

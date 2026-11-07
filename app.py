@@ -42,6 +42,31 @@ def close_db(exc):
         db.close()
 
 
+# The short lists (the 5 AM one for the day, and the night's for the quiet
+# hours): notes picked from the tracker, in order, each with why it's on the
+# list. Sending a day's slot again replaces its list.
+TODAY_TABLES = """
+        CREATE TABLE IF NOT EXISTS today_days (
+            day TEXT NOT NULL,
+            slot TEXT NOT NULL DEFAULT 'day',
+            headline TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (day, slot)
+        );
+        CREATE TABLE IF NOT EXISTS today_items (
+            day TEXT NOT NULL,
+            slot TEXT NOT NULL DEFAULT 'day',
+            pos INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT '',
+            why TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (day, slot, pos),
+            FOREIGN KEY (day, slot) REFERENCES today_days(day, slot) ON DELETE CASCADE
+        );
+"""
+
+
 def init_db():
     db = sqlite3.connect(DB_PATH)
     db.executescript(
@@ -81,25 +106,24 @@ def init_db():
             error TEXT NOT NULL DEFAULT '',
             attempts INTEGER NOT NULL DEFAULT 0
         );
-        -- The day's short list (the 5 AM brief): notes picked from the
-        -- tracker, in order, each with why it's on today's list. Sending a
-        -- day again replaces its list.
-        CREATE TABLE IF NOT EXISTS today_days (
-            day TEXT PRIMARY KEY,
-            headline TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS today_items (
-            day TEXT NOT NULL REFERENCES today_days(day) ON DELETE CASCADE,
-            pos INTEGER NOT NULL,
-            section TEXT NOT NULL,
-            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-            title TEXT NOT NULL DEFAULT '',
-            why TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY (day, pos)
-        );
-        """
+        """ + TODAY_TABLES
     )
+    # Today lists got a slot (the morning's and the night's) on 2026-11-06:
+    # an older database's two tables are rebuilt with it, one worker at a time.
+    db.execute("BEGIN IMMEDIATE")
+    if "slot" not in [r[1] for r in db.execute("PRAGMA table_info(today_days)").fetchall()]:
+        db.execute("ALTER TABLE today_items RENAME TO today_items_old")
+        db.execute("ALTER TABLE today_days RENAME TO today_days_old")
+        for stmt in TODAY_TABLES.split(";"):
+            if stmt.strip():
+                db.execute(stmt)
+        db.execute("INSERT INTO today_days(day, slot, headline, updated_at)"
+                   " SELECT day, 'day', headline, updated_at FROM today_days_old")
+        db.execute("INSERT INTO today_items(day, slot, pos, section, note_id, title, why)"
+                   " SELECT day, 'day', pos, section, note_id, title, why FROM today_items_old")
+        db.execute("DROP TABLE today_items_old")
+        db.execute("DROP TABLE today_days_old")
+    db.commit()
     # migrate older DBs that predate a column
     cols = [r[1] for r in db.execute("PRAGMA table_info(notes)").fetchall()]
     for col, decl in (
@@ -681,8 +705,12 @@ def update_note(nid):
     return jsonify(serialize_note(db, row))
 
 
-# ---- Today: the day's short list, picked each morning ----
-TODAY_SECTIONS = [("attention", "Needs attention"), ("step", "One step per project"), ("quick", "Ten-minute wins")]
+# ---- Today: the day's short list, picked each morning, and the night's ----
+TODAY_SECTIONS = [("attention", "Needs attention"), ("step", "One step per project"),
+                  ("cleanup", "Clean-up and housekeeping"), ("quick", "Ten-minute wins")]
+# The 5 AM list, for the day (people, calls, errands, the bench), and the
+# evening's, for the quiet hours at the desk once the kids are asleep.
+TODAY_SLOTS = {"day": "Today", "night": "Tonight"}
 DAY_RANGE = 31  # a list more than a month from today is a typo, and would shadow every real one
 
 
@@ -691,36 +719,54 @@ def today_page():
     return render_template("today.html")
 
 
-def today_list(db, day=None):
-    """A day's list, or the newest one. Each item carries its note, ticks and
-    all; a note deleted since drops out."""
-    row = (db.execute("SELECT * FROM today_days WHERE day=?", (day,)).fetchone() if day else
-           db.execute("SELECT * FROM today_days ORDER BY day DESC LIMIT 1").fetchone())
+def _slot(slot):
+    if slot not in TODAY_SLOTS:
+        raise BadRequest(f"slot must be one of {', '.join(TODAY_SLOTS)}")
+    return slot
+
+
+def today_list(db, day=None, slot=None):
+    """A day's list (its morning one unless slot says night), the newest of a
+    slot, or the newest of all: a night's list is newer than its morning's.
+    Each item carries its note, ticks and all; a note deleted since drops out."""
+    if day:
+        row = db.execute("SELECT * FROM today_days WHERE day=? AND slot=?", (day, slot or "day")).fetchone()
+    elif slot:
+        row = db.execute("SELECT * FROM today_days WHERE slot=? ORDER BY day DESC LIMIT 1", (slot,)).fetchone()
+    else:
+        row = db.execute("SELECT * FROM today_days ORDER BY day DESC, slot = 'night' DESC LIMIT 1").fetchone()
     if row is None:
-        return {"day": None, "headline": "", "sections": []}
+        return {"day": None, "slot": None, "label": "", "headline": "", "sections": []}
     sections = []
     for key, label in TODAY_SECTIONS:
         items = []
         for it in db.execute(
                 "SELECT i.title, i.why, n.* FROM today_items i JOIN notes n ON n.id = i.note_id"
-                " WHERE i.day=? AND i.section=? AND n.deleted=0 ORDER BY i.pos", (row["day"], key)):
+                " WHERE i.day=? AND i.slot=? AND i.section=? AND n.deleted=0 ORDER BY i.pos",
+                (row["day"], row["slot"], key)):
             items.append({**serialize_note(db, it), "title": it["title"] or it["body"], "why": it["why"]})
         if items:
             sections.append({"key": key, "label": label, "items": items})
-    return {"day": row["day"], "headline": row["headline"], "updated_at": row["updated_at"], "sections": sections}
+    return {"day": row["day"], "slot": row["slot"], "label": TODAY_SLOTS[row["slot"]], "headline": row["headline"],
+            "updated_at": row["updated_at"], "sections": sections}
 
 
 @app.route("/api/today")
 def api_today():
-    """?day=YYYY-MM-DD for that day's list; the newest one without it."""
-    return jsonify(today_list(get_db(), request.args.get("day")))
+    """?day=YYYY-MM-DD for that day's list, &slot=night for its night's; ?slot=
+    alone for the newest of that slot; nothing for the newest list of all."""
+    slot = request.args.get("slot")
+    return jsonify(today_list(get_db(), request.args.get("day"), _slot(slot) if slot else None))
 
 
 @app.route("/api/today/<day>", methods=["PUT"])
-def set_today(day):
-    """Replace a day's list: {"headline": ..., "items": [{"section": "attention"
-    | "step" | "quick", "note_id": <a whole note id>, "title": short, optional,
-    "why": one line}]}. Every item must be a note in the tracker."""
+@app.route("/api/today/<day>/<slot>", methods=["PUT"])
+def set_today(day, slot="day"):
+    """Replace a day's list (/night for its night's): {"headline": ..., "items":
+    [{"section": "attention" | "step" | "cleanup" | "quick", "note_id": <a whole
+    note id>, "title": short, optional, "why": one line}]}. Every item must be a
+    note in the tracker."""
+    _slot(slot)
     when = parse_day(day)
     if when is None:
         raise BadRequest("day must be a real date, YYYY-MM-DD")
@@ -741,14 +787,14 @@ def set_today(day):
         if not isinstance(nid, str) or not db.execute(
                 "SELECT 1 FROM notes WHERE id=? AND deleted=0", (nid,)).fetchone():
             raise BadRequest(f"item {i + 1}: no note {nid!r} in the tracker")
-        rows.append((day, i, it["section"], nid, _text(it, "title"), _text(it, "why")))
-    db.execute("DELETE FROM today_items WHERE day=?", (day,))
-    db.execute("INSERT INTO today_days(day, headline, updated_at) VALUES(?,?,?)"
-               " ON CONFLICT(day) DO UPDATE SET headline=excluded.headline, updated_at=excluded.updated_at",
-               (day, _text(data, "headline"), now_iso()))
-    db.executemany("INSERT INTO today_items(day, pos, section, note_id, title, why) VALUES(?,?,?,?,?,?)", rows)
+        rows.append((day, slot, i, it["section"], nid, _text(it, "title"), _text(it, "why")))
+    db.execute("DELETE FROM today_items WHERE day=? AND slot=?", (day, slot))
+    db.execute("INSERT INTO today_days(day, slot, headline, updated_at) VALUES(?,?,?,?)"
+               " ON CONFLICT(day, slot) DO UPDATE SET headline=excluded.headline, updated_at=excluded.updated_at",
+               (day, slot, _text(data, "headline"), now_iso()))
+    db.executemany("INSERT INTO today_items(day, slot, pos, section, note_id, title, why) VALUES(?,?,?,?,?,?,?)", rows)
     db.commit()
-    return jsonify(today_list(db, day))
+    return jsonify(today_list(db, day, slot))
 
 
 @app.route("/api/notes/<nid>", methods=["DELETE"])

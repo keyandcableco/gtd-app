@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Today · Tracker</title>
+<title>Today · Tracker</title><!-- the same at night too: tile-windows finds the pinned window by this title -->
 <style>
   /* The tracker's colours; one narrow column, made to sit open beside other windows all day. */
   :root {
@@ -96,8 +96,8 @@ function render(res) {
     list.innerHTML = `<div class="empty">The first one arrives at 5 AM, picked from the tracker.</div>`;
     return;
   }
-  el("#date").textContent = dayLabel(res.day);
-  el("#headline").textContent = res.headline || "Today's list";
+  el("#date").textContent = dayLabel(res.day) + (res.slot === "night" ? " · Tonight" : "");
+  el("#headline").textContent = res.headline || `${res.label}'s list`;
   list.innerHTML = "";
   res.sections.forEach(sec => {
     const h = document.createElement("h2");
@@ -109,10 +109,14 @@ function render(res) {
   count();
 }
 
+// A night's list is still tonight's until the morning's arrives at 5.
 function staleLine(res) {
-  const stale = !!res.day && res.day !== localDay();
+  const now = new Date();
+  const current = res.slot === "night" && now.getHours() < 5 ? localDay(new Date(now - 864e5)) : localDay(now);
+  const stale = !!res.day && res.day !== current;
   el("#stale").hidden = !stale;
-  if (stale) el("#stale").textContent = `This is ${dayLabel(res.day)}'s list. Today's arrives at 5 AM.`;
+  if (stale) el("#stale").textContent =
+    `This is ${dayLabel(res.day)}${res.slot === "night" ? " night" : ""}'s list. Today's arrives at 5 AM.`;
 }
 
 function itemEl(n) {
