@@ -47,6 +47,7 @@
            background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
   .later:hover, .later:focus-visible { color: var(--text); border-color: var(--muted); }
   .item.done .later { display: none; }
+  a.later { text-decoration: none; }
   .picker { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 6px; font-size: 12.5px; }
   .picker span { color: var(--muted); }
   .picker button, .picker input { font: inherit; padding: 2px 7px; color: var(--text); background: var(--panel2);
@@ -62,6 +63,7 @@
   @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
 </style>
 <link rel="icon" href="/static/icon-192.png">
+<script src="/static/claude.js"></script>
 </head>
 <body>
   <div class="date" id="date">Today</div>
@@ -146,10 +148,15 @@ function itemEl(n) {
       ${n.why ? `<div class="why">${escapeHtml(n.why)}</div>` : ""}
       ${n.details ? `<details><summary>Details</summary><div>${escapeHtml(n.details)}</div></details>` : ""}
     </div>
+    ${CLAUDE_HERE ? `<a class="later claude" title="Open a Claude session about this, with it typed in"
+                       aria-label="Ask Claude: ${escapeHtml(n.title)}">Claude</a>` : ""}
     <button type="button" class="later" aria-label="Put off: ${escapeHtml(n.title)}">Later</button>`;
   const box = d.querySelector(".tick");
   box.onchange = () => setDone(n.id, box.checked, d, box);
-  d.querySelector(".later").onclick = () => picker(n, d);
+  d.querySelector("button.later").onclick = () => picker(n, d);
+  const link = CLAUDE_HERE && claudeLink(n);
+  if (link) d.querySelector(".claude").href = link;
+  else if (CLAUDE_HERE) d.querySelector(".claude").remove();
   return d;
 }
 

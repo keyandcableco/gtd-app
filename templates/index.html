@@ -87,6 +87,7 @@
   .note .ctl { margin-left: auto; display: flex; gap: 4px; }
   .note .ctl button { background: transparent; border: none; color: var(--muted);
                       cursor: pointer; font-size: 13px; padding: 4px 6px; }
+  .note .ctl a { color: var(--muted); font-size: 13px; padding: 4px 6px; text-decoration: none; }
   .whenbadge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; color: #14161a; }
   .empty { color: var(--muted); text-align: center; padding: 24px; }
   a.export { color: var(--muted); font-size: 12px; text-decoration: none; }
@@ -120,6 +121,7 @@
   <link rel="manifest" href="/static/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <meta name="theme-color" content="#3a3a3a">
+  <script src="/static/claude.js"></script>
 </head>
 <body>
   <h1>Tracker <a href="/today" style="float:right;color:var(--accent);text-decoration:none;text-transform:none;letter-spacing:0">Today →</a></h1>
@@ -525,10 +527,14 @@ function renderNotes(notes) {
       ${n.details ? `<details class="notedetails"><summary>Details</summary><div>${escapeHtml(n.details)}</div></details>` : ""}
       <div class="meta">${badges.join("")}
         <span class="ctl">
+          ${CLAUDE_HERE ? `<a data-act="claude" title="Open a Claude session about this, with it typed in">claude</a>` : ""}
           <button data-act="edit">edit</button>
           <button data-act="del">delete</button>
         </span>
       </div>`;
+    const link = CLAUDE_HERE && claudeLink(n);
+    if (link) card.querySelector('[data-act="claude"]').href = link;
+    else if (CLAUDE_HERE) card.querySelector('[data-act="claude"]').remove();
     card.querySelector('[data-act="edit"]').onclick = () => startEdit(n);
     card.querySelector('[data-act="del"]').onclick = () => delNote(n.id, card);
     card.querySelector(".tick").onchange = e => setDone(n.id, e.target.checked, card, e.target);
