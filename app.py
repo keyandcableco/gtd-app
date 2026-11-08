@@ -801,6 +801,106 @@ def set_today(day, slot="day"):
     return jsonify(today_list(db, day, slot))
 
 
+# ---- Later: put a list item off to a day, and something else in its place ----
+STEP_RE = re.compile(r"step (\d+) of \d+: .*?\(([0-9a-f]{8})\)")
+GATED_RE = re.compile(r"(after|waits on|when|later step of)\b", re.I)  # note lines that say it can't start yet
+
+
+def pick_stand_in(db, day, slot, skip):
+    """The note to take a put-off item's place: open, not dated past the
+    list's day, not on the list already, not a project goal, not a later
+    step or one waiting on something; at night, nothing tagged with a place
+    (an errand or the bench). First a project the list doesn't have yet, then
+    the soonest When (Now to Soon), then the one waiting longest. None if
+    nothing fits."""
+    on_list = {r["note_id"] for r in db.execute(
+        "SELECT note_id FROM today_items WHERE day=? AND slot=?", (day, slot))} | {skip}
+    listed_what = {r["name"] for r in db.execute(
+        "SELECT t.name FROM today_items i JOIN note_tags nt ON nt.note_id = i.note_id"
+        " JOIN tags t ON t.id = nt.tag_id AND t.type = 'what'"
+        " WHERE i.day=? AND i.slot=? AND i.note_id != ?", (day, slot, skip))}
+    rows = db.execute(
+        "SELECT * FROM notes WHERE deleted=0 AND done_at IS NULL AND when_tag IN ('1-Now', '2-Next', '3-Soon')"
+        " AND (on_day IS NULL OR on_day <= ?)", (day,)).fetchall()
+    # Of each project, only its lowest open step can be started (counting steps of any When or day).
+    first_step = {}
+    for r in db.execute("SELECT note FROM notes WHERE deleted=0 AND done_at IS NULL"):
+        m = STEP_RE.match(r["note"] or "")
+        if m:
+            k, proj = int(m.group(1)), m.group(2)
+            first_step[proj] = min(first_step.get(proj, k), k)
+    best = None
+    for r in rows:
+        line = (r["note"] or "").lstrip()
+        if r["id"] in on_list or line.startswith("project:") or GATED_RE.match(line):
+            continue
+        m = STEP_RE.match(line)
+        if m and int(m.group(1)) > first_step[m.group(2)]:
+            continue
+        n = serialize_note(db, r)
+        if slot == "night" and n["where"]:
+            continue
+        key = (not set(n["what"]) - listed_what, r["when_tag"], r["created_at"])  # untagged: no new project
+        if best is None or key < best[0]:
+            best = (key, n)
+    return best and best[1]
+
+
+@app.route("/api/today/<day>/defer", methods=["POST"])
+@app.route("/api/today/<day>/<slot>/defer", methods=["POST"])
+def defer_item(day, slot="day"):
+    """Put one item on a day's list (/night for its night's) off to a later
+    day: {"note_id": <a whole note id>, "on_day": "YYYY-MM-DD", after the list's
+    day}. The note gets that day (GTD's tickler: it comes back that morning),
+    and another note takes its place in the list: "with" names one (with its
+    own "title", "why" and "section" if sent), or pick_stand_in finds one (a
+    deadline's goes under One step per project). Answers
+    {"list": the list as it is now, "stand_in": the note put in, or null when
+    nothing fit and the item just left the list}."""
+    _slot(slot)
+    if parse_day(day) is None:
+        raise BadRequest("day must be a real date, YYYY-MM-DD")
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        raise BadRequest("send a JSON object")
+    to = _on_day(data)
+    if to is None or to <= day:
+        raise BadRequest(f"on_day must be a day after the list's, {day}")
+    db = get_db()
+    nid = data.get("note_id")
+    item = db.execute("SELECT * FROM today_items WHERE day=? AND slot=? AND note_id=?", (day, slot, nid)).fetchone()
+    if item is None:
+        raise BadRequest(f"no note {nid!r} on the {day} {TODAY_SLOTS[slot]} list")
+    if db.execute("SELECT done_at FROM notes WHERE id=?", (nid,)).fetchone()["done_at"]:
+        raise BadRequest("that one's ticked off already")
+    # A stand-in for a deadline isn't one: the tracker's pick goes under One step per project.
+    section = "step" if item["section"] == "attention" else item["section"]
+    if "with" in data:
+        wid = data["with"]
+        row = db.execute("SELECT * FROM notes WHERE id=? AND deleted=0 AND done_at IS NULL", (wid,)).fetchone() \
+            if isinstance(wid, str) else None
+        if row is None:
+            raise BadRequest(f"with: no open note {wid!r} in the tracker")
+        if db.execute("SELECT 1 FROM today_items WHERE day=? AND slot=? AND note_id=?", (day, slot, wid)).fetchone():
+            raise BadRequest(f"with: {wid!r} is on that list already")
+        stand_in = serialize_note(db, row)
+        title, why = _text(data, "title"), _text(data, "why", row["note"])
+        section = data.get("section", item["section"])  # the caller's pick keeps its place unless it says
+        if section not in [k for k, _ in TODAY_SECTIONS]:
+            raise BadRequest(f"section must be one of {', '.join(k for k, _ in TODAY_SECTIONS)}")
+    else:
+        stand_in = pick_stand_in(db, day, slot, nid)
+        title, why = "", stand_in and stand_in["note"]
+    db.execute("UPDATE notes SET on_day=?, updated_at=? WHERE id=?", (to, now_iso(), nid))
+    if stand_in:
+        db.execute("UPDATE today_items SET note_id=?, section=?, title=?, why=? WHERE day=? AND slot=? AND pos=?",
+                   (stand_in["id"], section, title, why, day, slot, item["pos"]))
+    # and any second copy of it the list was sent with
+    db.execute("DELETE FROM today_items WHERE day=? AND slot=? AND note_id=?", (day, slot, nid))
+    db.commit()
+    return jsonify({"list": today_list(db, day, slot), "stand_in": stand_in})
+
+
 @app.route("/api/notes/<nid>", methods=["DELETE"])
 def delete_note(nid):
     db = get_db()

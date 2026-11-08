@@ -26,6 +26,7 @@ import app as gtd  # noqa: E402
 
 D0 = date.today().isoformat()
 D1 = (date.today() - timedelta(days=1)).isoformat()
+LATER, LATER2 = ((date.today() + timedelta(days=k)).isoformat() for k in (13, 14))
 
 
 class Today(unittest.TestCase):
@@ -145,6 +146,131 @@ class Today(unittest.TestCase):
         r = self.c.get("/today")
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Today", r.data)
+
+
+class Defer(unittest.TestCase):
+    """Later: an item put off to a day, and another note in its place."""
+
+    def setUp(self):
+        self.c = gtd.app.test_client()
+        db = gtd.connect()
+        for t in ("today_items", "today_days", "note_tags", "notes"):
+            db.execute(f"DELETE FROM {t}")
+        db.commit()
+        db.close()
+        self.a = self.note("Send the DR-1", what=["Business"], when_tag="1-Now")
+        self.b = self.note("Pick the mailing address", what=["Plates"], when_tag="2-Next")
+        self.c.put(f"/api/today/{D0}", json={"headline": "Greg.", "items": [
+            {"section": "attention", "note_id": self.a, "why": "due Nov 18"},
+            {"section": "step", "note_id": self.b, "why": "CAN-SPAM"}]})
+
+    def note(self, body, **kw):
+        r = self.c.post("/api/notes", json={"body": body, **kw})
+        self.assertEqual(r.status_code, 201, r.get_json())
+        return r.get_json()["id"]
+
+    def defer(self, nid, on_day=LATER, slot="", **kw):
+        return self.c.post(f"/api/today/{D0}{slot}/defer", json={"note_id": nid, "on_day": on_day, **kw})
+
+    def items(self, slot=""):
+        res = self.c.get(f"/api/today?day={D0}" + ("&slot=night" if slot else "")).get_json()
+        return [(s["key"], i["id"], i["why"]) for s in res["sections"] for i in s["items"]]
+
+    def test_dated_and_replaced_in_place(self):
+        later = self.note("Find out why Google can't index the site", what=["Website"], when_tag="2-Next",
+                          note="step 1 of 5: Get found in search (cdc560c1)")
+        r = self.defer(self.b)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(r.get_json()["stand_in"]["id"], later)
+        self.assertEqual(self.items(), [("attention", self.a, "due Nov 18"),
+                                        ("step", later, "step 1 of 5: Get found in search (cdc560c1)")])
+        b = next(n for n in self.c.get("/api/notes?done=all").get_json() if n["id"] == self.b)
+        self.assertEqual(b["on_day"], LATER)
+
+    def test_what_it_passes_over(self):
+        self.c.put(f"/api/notes/{self.note('Ticked', when_tag='1-Now')}", json={"done": True})
+        self.note("Dated past the list", when_tag="1-Now", on_day="2099-01-01")
+        self.note("Someday", when_tag="5-Someday")
+        self.note("Later", when_tag="4-Later")
+        self.note("No When")
+        self.note("Get found in search", when_tag="1-Now", note="project: 5 steps, in order in Details")
+        self.note("Step two", when_tag="1-Now", note="step 2 of 5: Get found in search (cdc560c1)")
+        self.note("Step one, a Later one", when_tag="4-Later", note="step 1 of 5: Get found in search (cdc560c1)")
+        self.note("Gated", when_tag="1-Now", note="after the Wi-Fi rename (545180ae)")
+        self.note("Waiting", when_tag="1-Now", note="waits on the boot-switch bench test")
+        self.note("Steps behind", when_tag="1-Now", note="later step of: Release the joystick harp")
+        r = self.defer(self.b)
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.get_json()["stand_in"])
+        self.assertEqual(self.items(), [("attention", self.a, "due Nov 18")])  # just one shorter
+
+    def test_a_new_project_first_then_when_then_oldest(self):
+        same = self.note("Another business one", what=["Business"], when_tag="1-Now")
+        old = self.note("Old PCB one", what=["PCBs"], when_tag="3-Soon")
+        newer = self.note("Newer PCB one", what=["PCBs"], when_tag="3-Soon")
+        self.assertEqual(self.defer(self.b).get_json()["stand_in"]["id"], old)  # a Soon of a new project beats a Now
+        self.assertEqual(self.defer(old).get_json()["stand_in"]["id"], newer)
+        self.assertEqual(self.defer(newer).get_json()["stand_in"]["id"], same)  # none new left: shares Business
+
+    def test_untagged_isnt_a_new_project(self):
+        self.note("Old untagged", when_tag="1-Now")
+        new = self.note("PCB one", what=["PCBs"], when_tag="3-Soon")
+        self.assertEqual(self.defer(self.b).get_json()["stand_in"]["id"], new)
+
+    def test_a_deadline_stand_in_goes_under_steps(self):
+        spare = self.note("Spare", what=["PCBs"], when_tag="2-Next")
+        self.defer(self.a)
+        self.assertEqual(self.items(), [("step", spare, ""), ("step", self.b, "CAN-SPAM")])
+        mine = self.note("Claude's pick")
+        r = self.defer(spare, **{"with": mine, "section": "quick"})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(self.items()[1:], [("quick", mine, "")])
+        self.assertEqual(self.defer(mine, **{"with": spare, "section": "later"}).status_code, 400)
+
+    def test_a_second_copy_goes_too(self):
+        self.c.put(f"/api/today/{D0}", json={"headline": "Greg.", "items": [
+            {"section": "attention", "note_id": self.a}, {"section": "quick", "note_id": self.a}]})
+        self.assertEqual(self.defer(self.a).status_code, 200)
+        self.assertEqual(self.items(), [("step", self.b, "")])  # in the first's place; the copy just goes
+
+    def test_night_skips_places(self):
+        self.c.put(f"/api/today/{D0}/night", json={"headline": "Quiet.", "items": [
+            {"section": "step", "note_id": self.b}]})
+        self.c.put(f"/api/notes/{self.a}", json={"done": True})  # else it fits tonight too
+        self.note("Buy screws", what=["Repairs"], when_tag="1-Now", where=["HomeDepot"])
+        desk = self.note("Draft the quote", what=["Repairs"], when_tag="2-Next")
+        r = self.defer(self.b, slot="/night")
+        self.assertEqual(r.get_json()["stand_in"]["id"], desk)
+        self.assertEqual(self.items("night"), [("step", desk, "")])
+        self.assertEqual(self.items()[1][1], self.b)  # the morning's list keeps it
+
+    def test_with_names_the_stand_in(self):
+        mine = self.note("Claude's pick", when_tag="4-Later", note="its own line")
+        r = self.defer(self.b, **{"with": mine, "title": "Do Claude's pick", "why": "fits tonight"})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        res = r.get_json()["list"]
+        item = res["sections"][1]["items"][0]
+        self.assertEqual((item["id"], item["title"], item["why"]), (mine, "Do Claude's pick", "fits tonight"))
+        other = self.note("Another pick")
+        self.c.post(f"/api/today/{D0}/defer", json={"note_id": mine, "on_day": LATER2, "with": other})
+        self.assertEqual(self.items()[1][1:], (other, ""))  # no why sent: its note line, here none
+
+    def test_refusals_change_nothing(self):
+        spare = self.note("Spare", when_tag="1-Now")
+        ticked = self.note("Ticked")
+        self.c.put(f"/api/notes/{ticked}", json={"done": True})
+        for nid, kw in ((self.b, {"on_day": D0}), (self.b, {"on_day": D1}), (self.b, {"on_day": "Dec 20"}),
+                        (self.b, {"on_day": ""}), (spare, {}), ("nope", {}),
+                        (self.b, {"with": self.a}), (self.b, {"with": ticked}), (self.b, {"with": "nope"}),
+                        (self.b, {"with": 7})):
+            r = self.c.post(f"/api/today/{D0}/defer", json={"note_id": nid, **{"on_day": LATER, **kw}})
+            self.assertEqual(r.status_code, 400, (nid, kw))
+        self.assertEqual(self.defer(self.b, slot="/evening").status_code, 400)
+        self.c.put(f"/api/notes/{self.a}", json={"done": True})
+        self.assertEqual(self.defer(self.a).status_code, 400)  # ticked off already
+        self.c.put(f"/api/notes/{self.a}", json={"done": False})
+        self.assertEqual(self.items(), [("attention", self.a, "due Nov 18"), ("step", self.b, "CAN-SPAM")])
+        self.assertIsNone(next(n for n in self.c.get("/api/notes").get_json() if n["id"] == self.b)["on_day"])
 
 
 class OnDay(unittest.TestCase):

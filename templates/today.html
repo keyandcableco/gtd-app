@@ -43,6 +43,18 @@
   details summary { cursor: pointer; color: var(--accent); font-size: 11.5px; opacity: .8; }
   details div { margin-top: 4px; color: var(--muted); white-space: pre-wrap; word-wrap: break-word;
                 border-left: 2px solid var(--line); padding-left: 8px; }
+  .later { flex: none; margin: 0; padding: 1px 7px; font: inherit; font-size: 12px; color: var(--muted);
+           background: none; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .later:hover, .later:focus-visible { color: var(--text); border-color: var(--muted); }
+  .item.done .later { display: none; }
+  .picker { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 6px; font-size: 12.5px; }
+  .picker span { color: var(--muted); }
+  .picker button, .picker input { font: inherit; padding: 2px 7px; color: var(--text); background: var(--panel2);
+                                  border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .picker input { color-scheme: dark; cursor: text; }
+  .picker button:hover { border-color: var(--accent); }
+  .picker .cancel { background: none; color: var(--muted); }
+  .notice { margin-top: 8px; padding: 6px 9px; font-size: 13px; background: var(--panel2); border-radius: 8px; }
   .empty { color: var(--muted); padding: 24px 0; }
   footer { margin-top: 18px; display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
   footer a { color: var(--muted); }
@@ -56,6 +68,7 @@
   <h1 id="headline"></h1>
   <div class="progress" id="progress" hidden><div class="bar"><i id="fill"></i></div><span id="count"></span></div>
   <div class="stale" id="stale" hidden></div>
+  <div class="notice" id="notice" role="status" hidden></div>
   <div id="list"><div class="empty">Loading…</div></div>
   <footer><a href="/" target="_blank" rel="noopener">All notes</a><span id="updated"></span></footer>
 
@@ -75,7 +88,7 @@ function dayLabel(day) {
 // way, so the list doesn't jump under the mouse.
 // A tick bumps gen, so an answer to a check that started before it is
 // dropped instead of drawing the box back the way it was.
-let shown = "", busy = 0, gen = 0;
+let shown = "", busy = 0, gen = 0, current = null;
 async function load() {
   if (busy) return;
   const mine = gen;
@@ -96,6 +109,8 @@ function render(res) {
     list.innerHTML = `<div class="empty">The first one arrives at 5 AM, picked from the tracker.</div>`;
     return;
   }
+  current = res;
+  if (closePicker) closePicker();  // its row is about to go
   el("#date").textContent = dayLabel(res.day) + (res.slot === "night" ? " · Tonight" : "");
   el("#headline").textContent = res.headline || `${res.label}'s list`;
   list.innerHTML = "";
@@ -130,10 +145,68 @@ function itemEl(n) {
       <div class="t">${escapeHtml(n.title)}${proj}</div>
       ${n.why ? `<div class="why">${escapeHtml(n.why)}</div>` : ""}
       ${n.details ? `<details><summary>Details</summary><div>${escapeHtml(n.details)}</div></details>` : ""}
-    </div>`;
+    </div>
+    <button type="button" class="later" aria-label="Put off: ${escapeHtml(n.title)}">Later</button>`;
   const box = d.querySelector(".tick");
   box.onchange = () => setDone(n.id, box.checked, d, box);
+  d.querySelector(".later").onclick = () => picker(n, d);
   return d;
+}
+
+// Later: pick a day, and the tracker dates the note (it comes back that
+// morning) and puts another one in its place. The list holds still while the
+// choices are open.
+function addDays(k) { const d = new Date(); d.setDate(d.getDate() + k); return localDay(d); }
+function shortDay(day) {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"});
+}
+let closePicker = null;  // one open at a time, so a redraw never strands one holding the list still
+function picker(n, row) {
+  if (row.querySelector(".picker")) return;
+  if (closePicker) closePicker();
+  busy++;
+  const p = document.createElement("div");
+  p.className = "picker";
+  const min = [addDays(1), (() => { const [y, m, d] = current.day.split("-").map(Number);
+    return localDay(new Date(y, m - 1, d + 1)); })()].sort()[1];
+  const choice = k => { const day = addDays(k) < min ? min : addDays(k);  // never on or before the list's day
+    return `<button type="button" data-day="${day}">${day === addDays(1) ? "Tomorrow" : shortDay(day)}</button>`; };
+  p.innerHTML = `<span>Put off to</span> ${choice(1)} ${choice(7)} ${choice(14)}
+    <input type="date" min="${min}" aria-label="Another day">
+    <button type="button" class="cancel">Cancel</button>`;
+  let open = true;
+  const close = () => { if (open) { open = false; p.remove(); busy--; closePicker = null; } };
+  closePicker = close;
+  p.querySelectorAll("button[data-day]").forEach(b => b.onclick = () => { close(); defer(n, b.dataset.day); });
+  const input = p.querySelector("input");
+  input.onchange = () => {
+    if (input.value >= min) { close(); defer(n, input.value); }
+    else if (input.value) { input.value = ""; alert(`Pick ${shortDay(min)} or later.`); }
+  };
+  p.querySelector(".cancel").onclick = close;
+  row.querySelector(".it").appendChild(p);
+  p.querySelector("button").focus();
+}
+async function defer(n, day) {
+  busy++; gen++;
+  const url = `/api/today/${current.day}${current.slot === "night" ? "/night" : ""}/defer`;
+  let res = null, why = "Check the connection.";
+  try {
+    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"},
+                                body: JSON.stringify({note_id: n.id, on_day: day})});
+    if (r.ok) res = await r.json();
+    else why = (await r.json().catch(() => ({}))).error || `The tracker answered ${r.status}.`;
+  } catch (e) { res = null; }
+  busy--;
+  // the list may have changed under the page (the 5 AM one arrived): the next check redraws it
+  if (!res) { shown = ""; alert(`Couldn't put that off. ${why}`); return; }
+  shown = JSON.stringify(res.list); render(res.list);
+  const notice = el("#notice");
+  notice.textContent = `“${n.title}” comes back ${shortDay(day)}. ` + (res.stand_in
+    ? `In its place: ${res.stand_in.body}.` : "Nothing else fit, so the list is one shorter.");
+  notice.hidden = false;
+  clearTimeout(defer.t); defer.t = setTimeout(() => { notice.hidden = true; }, 20000);
 }
 
 // Ticks the note itself, so it's ticked in the tracker too.

@@ -139,6 +139,17 @@ morning list, `&slot=night` for its night's; the newest of all by default) and `
 /api/today/<day>` (or `/api/today/<day>/night`) with `{"headline", "items": [{"section":
 "attention"|"step"|"cleanup"|"quick", "note_id", "title", "why"}]}`.
 
+**Later** on an item puts it off: pick tomorrow, a week, two weeks or a day, and the note
+gets that day (it comes back on that morning's list) while another note takes its place.
+The tracker's pick: open, not dated past the list's day, not already on it, Now to Soon,
+not a project goal, a later step or one waiting on something, nothing with a place at
+night; a project the list doesn't have yet first, then the soonest When, then the one
+waiting longest. Nothing fits, and the list is one shorter. `gtd defer ID --on DAY
+[--with ID --why ...]` does the same from a shell, where a Claude session picks the
+stand-in itself; underneath, `POST /api/today/<day>[/night]/defer` with `{"note_id",
+"on_day", "with"?, "title"?, "why"?, "section"?}`. The tracker's pick for a Needs
+attention item goes under One step per project; a ticked item can't be put off.
+
 ## Backup / grab a copy
 
 The **⬇ backup db** link (or `GET /api/export`) downloads the live `gtd.db`.
