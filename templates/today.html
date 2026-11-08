@@ -113,7 +113,7 @@ function render(res) {
   }
   current = res;
   if (closePicker) closePicker();  // its row is about to go
-  el("#date").textContent = dayLabel(res.day) + (res.slot === "night" ? " · Tonight" : "");
+  el("#date").textContent = dayLabel(res.day) + (res.slot !== "day" ? ` · ${res.label}` : "");
   el("#headline").textContent = res.headline || `${res.label}'s list`;
   list.innerHTML = "";
   res.sections.forEach(sec => {
@@ -133,7 +133,7 @@ function staleLine(res) {
   const stale = !!res.day && res.day !== current;
   el("#stale").hidden = !stale;
   if (stale) el("#stale").textContent =
-    `This is ${dayLabel(res.day)}${res.slot === "night" ? " night" : ""}'s list. Today's arrives at 5 AM.`;
+    `This is ${dayLabel(res.day)}${res.slot !== "day" ? ` ${res.slot}` : ""}'s list. Today's arrives at 5 AM.`;
 }
 
 function itemEl(n) {
@@ -197,7 +197,7 @@ function picker(n, row) {
 }
 async function defer(n, day) {
   busy++; gen++;
-  const url = `/api/today/${current.day}${current.slot === "night" ? "/night" : ""}/defer`;
+  const url = `/api/today/${current.day}${current.slot !== "day" ? `/${current.slot}` : ""}/defer`;
   let res = null, why = "Check the connection.";
   try {
     const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"},

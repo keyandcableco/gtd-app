@@ -42,7 +42,7 @@ def close_db(exc):
         db.close()
 
 
-# The short lists (the 5 AM one for the day, and the night's for the quiet
+# The short lists (the 5 AM one for the day, the noon one for the afternoon, and the night's for the quiet
 # hours): notes picked from the tracker, in order, each with why it's on the
 # list. Sending a day's slot again replaces its list.
 TODAY_TABLES = """
@@ -709,12 +709,15 @@ def update_note(nid):
     return jsonify(serialize_note(db, row))
 
 
-# ---- Today: the day's short list, picked each morning, and the night's ----
+# ---- Today: the day's short list, picked each morning, the afternoon's and the night's ----
 TODAY_SECTIONS = [("attention", "Needs attention"), ("step", "One step per project"),
                   ("cleanup", "Clean-up and housekeeping"), ("quick", "Ten-minute wins")]
-# The 5 AM list, for the day (people, calls, errands, the bench), and the
-# evening's, for the quiet hours at the desk once the kids are asleep.
-TODAY_SLOTS = {"day": "Today", "night": "Tonight"}
+# The 5 AM list, for the day (people, calls, errands, the bench), the noon
+# one, for what the afternoon still has time and open hours for, and the
+# evening's, for the quiet hours at the desk once the kids are asleep. In the
+# order they come, so each is newer than the one before it on the same day.
+TODAY_SLOTS = {"day": "Today", "afternoon": "This afternoon", "night": "Tonight"}
+SLOT_ORDER = "CASE slot " + " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(TODAY_SLOTS)) + " END"
 DAY_RANGE = 31  # a list more than a month from today is a typo, and would shadow every real one
 
 
@@ -730,15 +733,15 @@ def _slot(slot):
 
 
 def today_list(db, day=None, slot=None):
-    """A day's list (its morning one unless slot says night), the newest of a
-    slot, or the newest of all: a night's list is newer than its morning's.
+    """A day's list (its morning one unless slot says otherwise), the newest of
+    a slot, or the newest of all: later slots of a day are newer.
     Each item carries its note, ticks and all; a note deleted since drops out."""
     if day:
         row = db.execute("SELECT * FROM today_days WHERE day=? AND slot=?", (day, slot or "day")).fetchone()
     elif slot:
         row = db.execute("SELECT * FROM today_days WHERE slot=? ORDER BY day DESC LIMIT 1", (slot,)).fetchone()
     else:
-        row = db.execute("SELECT * FROM today_days ORDER BY day DESC, slot = 'night' DESC LIMIT 1").fetchone()
+        row = db.execute(f"SELECT * FROM today_days ORDER BY day DESC, {SLOT_ORDER} DESC LIMIT 1").fetchone()
     if row is None:
         return {"day": None, "slot": None, "label": "", "headline": "", "sections": []}
     sections = []
@@ -757,7 +760,7 @@ def today_list(db, day=None, slot=None):
 
 @app.route("/api/today")
 def api_today():
-    """?day=YYYY-MM-DD for that day's list, &slot=night for its night's; ?slot=
+    """?day=YYYY-MM-DD for that day's list, &slot=afternoon|night for its others; ?slot=
     alone for the newest of that slot; nothing for the newest list of all."""
     slot = request.args.get("slot")
     return jsonify(today_list(get_db(), request.args.get("day"), _slot(slot) if slot else None))
@@ -766,7 +769,7 @@ def api_today():
 @app.route("/api/today/<day>", methods=["PUT"])
 @app.route("/api/today/<day>/<slot>", methods=["PUT"])
 def set_today(day, slot="day"):
-    """Replace a day's list (/night for its night's): {"headline": ..., "items":
+    """Replace a day's list (/afternoon or /night for those): {"headline": ..., "items":
     [{"section": "attention" | "step" | "cleanup" | "quick", "note_id": <a whole
     note id>, "title": short, optional, "why": one line}]}. Every item must be a
     note in the tracker."""
@@ -849,7 +852,7 @@ def pick_stand_in(db, day, slot, skip):
 @app.route("/api/today/<day>/defer", methods=["POST"])
 @app.route("/api/today/<day>/<slot>/defer", methods=["POST"])
 def defer_item(day, slot="day"):
-    """Put one item on a day's list (/night for its night's) off to a later
+    """Put one item on a day's list (/afternoon or /night for those) off to a later
     day: {"note_id": <a whole note id>, "on_day": "YYYY-MM-DD", after the list's
     day}. The note gets that day (GTD's tickler: it comes back that morning),
     and another note takes its place in the list: "with" names one (with its

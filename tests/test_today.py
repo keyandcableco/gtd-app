@@ -115,6 +115,23 @@ class Today(unittest.TestCase):
             {"section": "quick", "note_id": self.b}]}).status_code, 400)
         self.assertEqual(self.c.get("/api/today?slot=evening").status_code, 400)
 
+    def test_afternoon_between_morning_and_night(self):
+        self.put(D0, [{"section": "attention", "note_id": self.a}])
+        noon = {"headline": "Shops close at 6", "items": [{"section": "step", "note_id": self.b}]}
+        self.assertEqual(self.c.put(f"/api/today/{D0}/afternoon", json=noon).status_code, 200)
+        res = self.c.get("/api/today").get_json()
+        self.assertEqual((res["slot"], res["label"], res["headline"]), ("afternoon", "This afternoon", "Shops close at 6"))
+        self.c.put(f"/api/today/{D0}/night", json={"items": [{"section": "quick", "note_id": self.a}]})
+        self.assertEqual(self.c.get("/api/today").get_json()["slot"], "night")
+        self.put(D1, [{"section": "quick", "note_id": self.b}])  # yesterday's morning is older than all three
+        self.assertEqual(self.c.get("/api/today").get_json()["slot"], "night")
+        self.assertEqual(self.c.get(f"/api/today?day={D0}").get_json()["headline"], "Twelve days, Greg.")
+        later = (date.today() + timedelta(days=2)).isoformat()
+        r = self.c.post(f"/api/today/{D0}/afternoon/defer", json={"note_id": self.b, "on_day": later})
+        self.assertEqual(r.status_code, 200)  # the afternoon list takes Later too
+        self.assertEqual(r.get_json()["list"]["slot"], "afternoon")
+        self.assertEqual([n["on_day"] for n in self.c.get("/api/notes?done=all").get_json() if n["id"] == self.b], [later])
+
     def test_old_database_gets_the_slot(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
