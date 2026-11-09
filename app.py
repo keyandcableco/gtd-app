@@ -42,7 +42,7 @@ def close_db(exc):
         db.close()
 
 
-# The short lists (the 5 AM one for the day, the noon one for the afternoon, and the night's for the quiet
+# The short lists (the 4 AM one for the day, the noon one for the afternoon, and the night's for the quiet
 # hours): notes picked from the tracker, in order, each with why it's on the
 # list. Sending a day's slot again replaces its list.
 TODAY_TABLES = """
@@ -712,7 +712,7 @@ def update_note(nid):
 # ---- Today: the day's short list, picked each morning, the afternoon's and the night's ----
 TODAY_SECTIONS = [("attention", "Needs attention"), ("step", "One step per project"),
                   ("cleanup", "Clean-up and housekeeping"), ("quick", "Ten-minute wins")]
-# The 5 AM list, for the day (people, calls, errands, the bench), the noon
+# The 4 AM list, for the day (people, calls, errands, the bench), the noon
 # one, for what the afternoon still has time and open hours for, and the
 # evening's, for the quiet hours at the desk once the kids are asleep. In the
 # order they come, so each is newer than the one before it on the same day.

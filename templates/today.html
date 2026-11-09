@@ -108,7 +108,7 @@ function render(res) {
   const list = el("#list");
   if (!res.day) {
     el("#headline").textContent = "No list yet";
-    list.innerHTML = `<div class="empty">The first one arrives at 5 AM, picked from the tracker.</div>`;
+    list.innerHTML = `<div class="empty">The first one arrives at 4 AM, picked from the tracker.</div>`;
     return;
   }
   current = res;
@@ -126,14 +126,14 @@ function render(res) {
   count();
 }
 
-// A night's list is still tonight's until the morning's arrives at 5.
+// A night's list is still tonight's until the morning's arrives at 4.
 function staleLine(res) {
   const now = new Date();
-  const current = res.slot === "night" && now.getHours() < 5 ? localDay(new Date(now - 864e5)) : localDay(now);
+  const current = res.slot === "night" && now.getHours() < 4 ? localDay(new Date(now - 864e5)) : localDay(now);
   const stale = !!res.day && res.day !== current;
   el("#stale").hidden = !stale;
   if (stale) el("#stale").textContent =
-    `This is ${dayLabel(res.day)}${res.slot !== "day" ? ` ${res.slot}` : ""}'s list. Today's arrives at 5 AM.`;
+    `This is ${dayLabel(res.day)}${res.slot !== "day" ? ` ${res.slot}` : ""}'s list. Today's arrives at 4 AM.`;
 }
 
 function itemEl(n) {
@@ -206,7 +206,7 @@ async function defer(n, day) {
     else why = (await r.json().catch(() => ({}))).error || `The tracker answered ${r.status}.`;
   } catch (e) { res = null; }
   busy--;
-  // the list may have changed under the page (the 5 AM one arrived): the next check redraws it
+  // the list may have changed under the page (the 4 AM one arrived): the next check redraws it
   if (!res) { shown = ""; alert(`Couldn't put that off. ${why}`); return; }
   shown = JSON.stringify(res.list); render(res.list);
   const notice = el("#notice");

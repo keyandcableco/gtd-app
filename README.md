@@ -125,7 +125,7 @@ Glance clock. The page doesn't show or set days yet, and editing a note there ke
 
 ## Today
 
-`/today` is the day's short list: 9 to 12 notes picked from the tracker each morning at 5
+`/today` is the day's short list: 9 to 12 notes picked from the tracker each morning by 4
 (a Claude scheduled task), in parts (Needs attention, One step per project, Ten-minute
 wins), each with a line on why it's on today's list. At 11:30 a second task picks the
 afternoon's list (what the rest of the day still has time and open hours for, with the
