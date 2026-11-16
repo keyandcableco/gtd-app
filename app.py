@@ -828,7 +828,7 @@ def pick_stand_in(db, day, slot, skip):
     # Of each project, only its lowest open step can be started (counting steps of any When or day).
     first_step = {}
     for r in db.execute("SELECT note FROM notes WHERE deleted=0 AND done_at IS NULL"):
-        m = STEP_RE.match(r["note"] or "")
+        m = STEP_RE.match(waiting_line(r["note"], False))  # a step that's waiting still holds its place
         if m:
             k, proj = int(m.group(1)), m.group(2)
             first_step[proj] = min(first_step.get(proj, k), k)

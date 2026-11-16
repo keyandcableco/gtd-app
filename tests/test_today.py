@@ -327,6 +327,12 @@ class Waiting(OnList):
         self.assertEqual(self.c.post(f"/api/notes/{nid}/wait", json={"waiting": False}).get_json()["note"],
                          "he has the schematic")
 
+    def test_a_waiting_step_still_holds_its_place(self):
+        one = self.note("Step one", what=["PCBs"], when_tag="2-Next", note="step 1 of 2: Boards (abcd1234)")
+        self.note("Step two", what=["PCBs"], when_tag="1-Now", note="step 2 of 2: Boards (abcd1234)")
+        self.c.post(f"/api/notes/{one}/wait", json={"waiting": True})
+        self.assertIsNone(self.wait(self.b).get_json()["stand_in"])  # not step two
+
     def test_waiting_line(self):
         w = gtd.waiting_line
         self.assertEqual(w("", True), "waits on someone else")
