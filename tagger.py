@@ -204,6 +204,64 @@ def to_notes(answer, when_tags, tags):
     return [n for n in notes if n["body"]]
 
 
+# ---- Replies: the answers Greg is likely to give a list item, for one-click chips ----
+REPLIES_SYSTEM = "\n".join([
+    "Greg runs Key & Cable, a small repair shop for synths and Omnichords, and makes minichord accessories. "
+    "His to-do tracker shows him one item at a time; under each he answers in a few words, and a Claude "
+    "session then acts on that answer (drafts the message, looks things up, files the next step, ticks it off).",
+    "",
+    "Given one item, write the 2 or 3 answers Greg is most likely to give, each one he could click as is:",
+    "- Each is a different way forward, specific to this item: a concrete next action (\"Text Shane for the "
+    "schematic\", \"Order 10 from Mouser\"), a decision, handing it to Claude (\"Draft the email for me\"), "
+    "or dropping it (\"Drop it, not worth it\").",
+    "- At most 8 words, plain, in Greg's voice, first person or imperative. Names and part numbers exactly as "
+    "in the item. Never invent facts, prices or dates the item doesn't give.",
+    "- Not \"done\", \"later\" or \"waiting on someone\": those have their own buttons.",
+])
+REPLIES_SCHEMA = {"type": "object", "properties": {"replies": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["replies"], "additionalProperties": False}
+REPLY_MAX = 80
+
+
+def _ask_replies(item, wait):
+    import anthropic
+    try:
+        response = _get_client().with_options(timeout=wait).messages.create(
+            model=MODEL,
+            max_tokens=1000,
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": REPLIES_SCHEMA}},
+            system=REPLIES_SYSTEM,
+            messages=[{"role": "user", "content": f"The item:\n{item}"}],
+        )
+    except anthropic.APIError as e:
+        raise RuntimeError(f"{type(e).__name__}: {e}"[:300]) from e
+    if response.stop_reason != "end_turn":
+        raise RuntimeError(f"Haiku stopped early ({response.stop_reason})")
+    answer = next((b.text for b in response.content if b.type == "text"), "")
+    try:
+        return json.loads(answer)
+    except ValueError as e:
+        raise RuntimeError("Haiku's answer wasn't valid JSON") from e
+
+
+def replies(item, wait=35):
+    """Up to 3 short answers Greg might give this item (its text, as one block),
+    or raises RuntimeError like read()."""
+    if not available():
+        raise RuntimeError("no Anthropic API key set")
+    job = _pool.submit(_ask_replies, item, wait)
+    try:
+        answer = job.result(timeout=wait + 5)
+    except concurrent.futures.TimeoutError:
+        raise RuntimeError(f"no answer from Haiku in {wait} s") from None
+    out = []
+    for r in answer.get("replies") or []:
+        r = " ".join(str(r).split())[:REPLY_MAX]
+        if r and r.lower() not in {x.lower() for x in out}:
+            out.append(r)
+    return out[:3]
+
+
 def read(text, when_tags, tags, wait=35):
     """The notes in this text (possibly none), or raises RuntimeError (no key,
     API error, refusal, no answer within wait seconds).

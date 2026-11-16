@@ -48,6 +48,11 @@
   .later:hover, .later:focus-visible { color: var(--text); border-color: var(--muted); }
   .item.done .later { display: none; }
   a.later { text-decoration: none; }
+  .replies { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .reply { font-size: 12px; padding: 1px 7px; color: var(--accent); text-decoration: none;
+           border: 1px dashed var(--line); border-radius: 10px; word-wrap: break-word; max-width: 100%; }
+  .reply:hover, .reply:focus-visible { border-color: var(--accent); border-style: solid; }
+  .item.done .replies { display: none; }
   .picker { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 6px; font-size: 12.5px; }
   .picker span { color: var(--muted); }
   .picker button, .picker input { font: inherit; padding: 2px 7px; color: var(--text); background: var(--panel2);
@@ -140,6 +145,7 @@ function itemEl(n) {
   const d = document.createElement("div");
   d.className = "item" + (n.done_at ? " done" : "");
   d.dataset.w = n.when_tag ? n.when_tag[0] : "";
+  d.dataset.id = n.id;
   const proj = n.what.length ? `<span class="proj">${escapeHtml(n.what.join(", "))}</span>` : "";
   d.innerHTML = `
     <input type="checkbox" class="tick" ${n.done_at ? "checked" : ""} aria-label="Done: ${escapeHtml(n.title)}">
@@ -160,7 +166,50 @@ function itemEl(n) {
   const link = CLAUDE_HERE && claudeLink(n);
   if (link) d.querySelector(".claude").href = link;
   else if (CLAUDE_HERE) d.querySelector(".claude").remove();
+  if (link && !n.done_at) {
+    if (n.replies) showReplies(d, n, n.replies);
+    else if (n.replies === null) askReplies(d, n);
+  }
   return d;
+}
+
+// Replies: Haiku's likely answers to an item, written once per note and kept
+// by the tracker. Each opens the Claude session with that answer typed in.
+// Asked for one at a time; a tracker without Haiku (503) stops the asking.
+const repliesAsked = new Set();
+let repliesQueue = Promise.resolve(), repliesOff = false;
+function showReplies(row, n, replies) {
+  const it = row.querySelector(".it");
+  if (!replies.length || it.querySelector(".replies")) return;
+  const box = document.createElement("div");
+  box.className = "replies";
+  replies.forEach(r => {
+    const href = claudeLink(n, r);
+    if (!href) return;
+    const a = document.createElement("a");
+    a.className = "reply"; a.href = href; a.textContent = r;
+    a.title = "Open a Claude session about this, with this answer typed in";
+    box.appendChild(a);
+  });
+  const after = it.querySelector("details") || it.querySelector(".picker");
+  it.insertBefore(box, after);
+}
+function askReplies(row, n) {
+  if (repliesAsked.has(n.id)) return;
+  repliesAsked.add(n.id);
+  repliesQueue = repliesQueue.then(async () => {
+    if (repliesOff) return;
+    try {
+      const r = await fetch(`/api/notes/${encodeURIComponent(n.id)}/replies`, {method: "POST",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify({title: n.title, why: n.why || ""})});
+      if (r.status === 503) { repliesOff = true; return; }
+      if (!r.ok) return;
+      const res = await r.json();
+      // the row on screen now (a redraw may have replaced it); the next check redraws with them too
+      const now = [...document.querySelectorAll(".item")].find(x => x.dataset.id === n.id);
+      if (now) showReplies(now, n, res.replies || []);
+    } catch (e) { repliesAsked.delete(n.id); }  // the connection: try again on the next draw
+  });
 }
 
 // Later: pick a day, and the tracker dates the note (it comes back that

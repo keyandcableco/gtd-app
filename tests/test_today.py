@@ -349,6 +349,55 @@ class Waiting(OnList):
         self.assertEqual(self.get(self.b)["note"], "")
 
 
+class Replies(unittest.TestCase):
+    """Haiku's likely answers to an item: written once, kept until the note's text changes."""
+
+    def setUp(self):
+        self.c = gtd.app.test_client()
+        self.id = self.c.post("/api/notes", json={"body": "Ask Shane about the amp", "note": "he has the schematic",
+                                                  "what": ["Repairs"]}).get_json()["id"]
+
+    def ask(self, **kw):
+        return self.c.post(f"/api/notes/{self.id}/replies", json={"title": "Ask Shane", "why": "Friday", **kw})
+
+    def get(self):
+        return next(n for n in self.c.get("/api/notes?done=all").get_json() if n["id"] == self.id)
+
+    def test_written_once_and_kept(self):
+        self.assertIsNone(self.get()["replies"])
+        with mock.patch.object(gtd.tagger, "replies", return_value=["Text Shane today", "Draft it for me"]) as h:
+            self.assertEqual(self.ask().get_json()["replies"], ["Text Shane today", "Draft it for me"])
+            self.assertEqual(self.ask().get_json()["replies"], ["Text Shane today", "Draft it for me"])
+        self.assertEqual(h.call_count, 1)
+        item = h.call_args[0][0]
+        for part in ("Ask Shane", "Ask Shane about the amp", "Friday", "he has the schematic", "Repairs"):
+            self.assertIn(part, item)
+        self.assertEqual(self.get()["replies"], ["Text Shane today", "Draft it for me"])
+
+    def test_new_ones_after_an_edit(self):
+        with mock.patch.object(gtd.tagger, "replies", return_value=["One"]):
+            self.ask()
+        self.c.put(f"/api/notes/{self.id}", json={"note": "he moved"})
+        self.assertIsNone(self.get()["replies"])
+        with mock.patch.object(gtd.tagger, "replies", return_value=["Two"]):
+            self.assertEqual(self.ask().get_json()["replies"], ["Two"])
+        self.c.post(f"/api/notes/{self.id}/wait", json={"waiting": True})
+        self.assertIsNone(self.get()["replies"])
+
+    def test_without_haiku(self):
+        with mock.patch.object(gtd.tagger, "replies", side_effect=RuntimeError("no Anthropic API key set")):
+            self.assertEqual(self.ask().status_code, 503)
+        self.assertIsNone(self.get()["replies"])
+        self.assertEqual(self.c.post("/api/notes/nope/replies", json={}).status_code, 404)
+
+    def test_tagger_cleans_them(self):
+        with mock.patch.object(gtd.tagger, "available", return_value=True), \
+                mock.patch.object(gtd.tagger, "_ask_replies",
+                                  return_value={"replies": ["  Text  Shane ", "text shane", "x" * 200, "B", "C"]}):
+            got = gtd.tagger.replies("item")
+        self.assertEqual(got, ["Text Shane", "x" * gtd.tagger.REPLY_MAX, "B"])
+
+
 class OnDay(unittest.TestCase):
     def setUp(self):
         self.c = gtd.app.test_client()

@@ -26,10 +26,11 @@ function claudeCut(s, max) {
 }
 
 // The link, or null if the note can't be made into one (the page goes on without it).
-function claudeLink(n) {
-  try { return claudeHref(n); } catch (e) { return null; }
+// answer: one of Haiku's suggested replies, typed in after "My answer: ".
+function claudeLink(n, answer = "") {
+  try { return claudeHref(n, answer); } catch (e) { return null; }
 }
-function claudeHref(n) {
+function claudeHref(n, answer) {
   const id8 = n.id.slice(0, 8), title = n.title || n.body;
   const lines = [`Tracker item ${id8}: ${title}`];
   if (n.body && n.body !== title) lines.push(n.body);
@@ -41,7 +42,7 @@ function claudeHref(n) {
   if (n.details) lines.push("Details:\n" + n.details);
   const ask = ["", `Help me answer this tracker item. \`gtd show ${id8}\` has the latest. Record what we settle in its`
     + ` Details with \`gtd edit\` (keep what's there), and tick it with \`gtd done\` once I say it's done.`,
-    "", "My answer: "].join("\n");
+    "", "My answer: " + answer].join("\n");
   const more = "\n(cut short: gtd show has the rest)";
   let item = lines.join("\n");
   if (item.length + ask.length > CLAUDE_PROMPT_MAX) item = claudeCut(item, CLAUDE_PROMPT_MAX - ask.length - more.length) + more;

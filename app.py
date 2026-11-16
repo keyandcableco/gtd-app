@@ -1,4 +1,4 @@
-import sqlite3, uuid, os, re, logging, threading, time
+import sqlite3, uuid, os, re, logging, threading, time, hashlib, json
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template, g, send_file
 
@@ -138,6 +138,9 @@ def init_db():
         ("source", "TEXT NOT NULL DEFAULT ''"),    # where it came from: "Claude: <session>", "Open Loops: ..."
         ("ref", "TEXT NOT NULL DEFAULT ''"),       # a sender's own id, so sending it again updates it
         ("on_day", "TEXT"),                        # the day it comes up (GTD's tickler), YYYY-MM-DD; NULL for none
+        # Haiku's likely answers (a JSON list), and the note text they were written for (replies_for)
+        ("replies", "TEXT NOT NULL DEFAULT ''"),
+        ("replies_for", "TEXT NOT NULL DEFAULT ''"),
     ):
         if col not in cols:
             try:
@@ -182,6 +185,7 @@ def serialize_note(db, row):
         "source": row["source"],
         "ref": row["ref"],
         "on_day": row["on_day"],
+        "replies": current_replies(row),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         **grouped,
@@ -928,6 +932,56 @@ def _take_off(day, slot, data, set_sql, set_args):
     db.execute("DELETE FROM today_items WHERE day=? AND slot=? AND note_id=?", (day, slot, nid))
     db.commit()
     return jsonify({"list": today_list(db, day, slot), "stand_in": stand_in})
+
+
+# ---- Replies: Haiku's likely answers to a list item, made once and kept ----
+def replies_key(row):
+    """What the replies were written for: a change to the note's text makes new ones."""
+    return hashlib.sha1("\0".join((row["body"], row["note"], row["details"])).encode()).hexdigest()
+
+
+def current_replies(row):
+    """The kept replies, or None when there are none for the note as it reads now."""
+    if not row["replies_for"] or row["replies_for"] != replies_key(row):
+        return None
+    try:
+        return json.loads(row["replies"])
+    except ValueError:
+        return None
+
+
+@app.route("/api/notes/<nid>/replies", methods=["POST"])
+def note_replies(nid):
+    """The Today page asks for an item's replies when it has none: the kept ones,
+    or Haiku writes them (one call, a few seconds) and they're kept. {"title":
+    ..., "why": ...} from the list item go with the note's text. 503 without
+    Haiku: the page goes on without them."""
+    db = get_db()
+    row = db.execute("SELECT * FROM notes WHERE id=? AND deleted=0", (nid,)).fetchone()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    have = current_replies(row)
+    if have is not None:
+        return jsonify({"replies": have})
+    if row["done_at"]:
+        return jsonify({"replies": []})
+    data = request.get_json(silent=True)
+    data = data if isinstance(data, dict) else {}
+    n = serialize_note(db, row)
+    lines = [_text(data, "title") or n["body"], n["body"], _text(data, "why"), n["note"],
+             ", ".join(n["what"] + n["who"] + n["where"]), n["details"][:3000]]
+    item = "\n".join(dict.fromkeys(x for x in lines if x))  # each once, in order
+    key = replies_key(row)
+    try:
+        found = tagger.replies(item)
+    except Exception as e:
+        log.warning("Haiku couldn't write replies for %s: %s", nid[:8], e)
+        return jsonify({"error": str(e)[:300] or type(e).__name__}), 503
+    # kept only if the note still reads as it did (an edit meanwhile makes new ones next time)
+    db.execute("UPDATE notes SET replies=?, replies_for=? WHERE id=? AND body=? AND note=? AND details=?",
+               (json.dumps(found), key, nid, row["body"], row["note"], row["details"]))
+    db.commit()
+    return jsonify({"replies": found})
 
 
 # ---- Waiting: on someone else, with no day ----
