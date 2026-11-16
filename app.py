@@ -860,21 +860,46 @@ def defer_item(day, slot="day"):
     deadline's goes under One step per project). Answers
     {"list": the list as it is now, "stand_in": the note put in, or null when
     nothing fit and the item just left the list}."""
+    data = _list_request(day, slot)
+    to = _on_day(data)
+    if to is None or to <= day:
+        raise BadRequest(f"on_day must be a day after the list's, {day}")
+    return _take_off(day, slot, data, "on_day=?", (to,))
+
+
+@app.route("/api/today/<day>/wait", methods=["POST"])
+@app.route("/api/today/<day>/<slot>/wait", methods=["POST"])
+def wait_item(day, slot="day"):
+    """The Waiting button: one item on a day's list (/afternoon or /night for
+    those) waits on someone else, with no day: {"note_id": <a whole note id>}
+    (and "with" etc. as for defer). Its note line starts "waits on someone
+    else", so no list picks it until that line goes (the All notes page's
+    "not waiting", or an edit), and a stand-in takes its place. Answers as
+    defer does."""
+    data = _list_request(day, slot)
+    return _take_off(day, slot, data, "note=?", (lambda row: waiting_line(row["note"], True),))
+
+
+def _list_request(day, slot):
     _slot(slot)
     if parse_day(day) is None:
         raise BadRequest("day must be a real date, YYYY-MM-DD")
     data = request.get_json(force=True)
     if not isinstance(data, dict):
         raise BadRequest("send a JSON object")
-    to = _on_day(data)
-    if to is None or to <= day:
-        raise BadRequest(f"on_day must be a day after the list's, {day}")
+    return data
+
+
+def _take_off(day, slot, data, set_sql, set_args):
+    """Take a list item off (Later and Waiting): change its note (set_sql, with
+    set_args; a callable one gets the note's row) and put a stand-in in its spot."""
     db = get_db()
     nid = data.get("note_id")
     item = db.execute("SELECT * FROM today_items WHERE day=? AND slot=? AND note_id=?", (day, slot, nid)).fetchone()
     if item is None:
         raise BadRequest(f"no note {nid!r} on the {day} {TODAY_SLOTS[slot]} list")
-    if db.execute("SELECT done_at FROM notes WHERE id=?", (nid,)).fetchone()["done_at"]:
+    note = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    if note["done_at"]:
         raise BadRequest("that one's ticked off already")
     # A stand-in for a deadline isn't one: the tracker's pick goes under One step per project.
     section = "step" if item["section"] == "attention" else item["section"]
@@ -894,7 +919,8 @@ def defer_item(day, slot="day"):
     else:
         stand_in = pick_stand_in(db, day, slot, nid)
         title, why = "", stand_in and stand_in["note"]
-    db.execute("UPDATE notes SET on_day=?, updated_at=? WHERE id=?", (to, now_iso(), nid))
+    args = tuple(a(note) if callable(a) else a for a in set_args)
+    db.execute(f"UPDATE notes SET {set_sql}, updated_at=? WHERE id=?", (*args, now_iso(), nid))
     if stand_in:
         db.execute("UPDATE today_items SET note_id=?, section=?, title=?, why=? WHERE day=? AND slot=? AND pos=?",
                    (stand_in["id"], section, title, why, day, slot, item["pos"]))
@@ -902,6 +928,37 @@ def defer_item(day, slot="day"):
     db.execute("DELETE FROM today_items WHERE day=? AND slot=? AND note_id=?", (day, slot, nid))
     db.commit()
     return jsonify({"list": today_list(db, day, slot), "stand_in": stand_in})
+
+
+# ---- Waiting: on someone else, with no day ----
+WAITING = "waits on someone else"  # starts with "waits on", so GATED_RE (and the list prompts) pass it over
+
+
+def waiting_line(note, waiting):
+    """The note line with the waiting mark put first, or taken off."""
+    note = (note or "").strip()
+    rest = note[len(WAITING):].lstrip(" ;") if note.lower().startswith(WAITING) else note
+    if not waiting:
+        return rest
+    return f"{WAITING}; {rest}" if rest else WAITING
+
+
+@app.route("/api/notes/<nid>/wait", methods=["POST"])
+def wait_note(nid):
+    """The All notes page's wait / not waiting: {"waiting": true | false}. Only
+    the note line changes; a Today list it's on keeps it (that page's own
+    Waiting button swaps in a stand-in)."""
+    data = request.get_json(force=True)
+    if not isinstance(data, dict) or not isinstance(data.get("waiting"), bool):
+        raise BadRequest('send {"waiting": true} or {"waiting": false}')
+    db = get_db()
+    row = db.execute("SELECT * FROM notes WHERE id=? AND deleted=0", (nid,)).fetchone()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    db.execute("UPDATE notes SET note=?, updated_at=? WHERE id=?",
+               (waiting_line(row["note"], data["waiting"]), now_iso(), nid))
+    db.commit()
+    return jsonify(serialize_note(db, db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()))
 
 
 @app.route("/api/notes/<nid>", methods=["DELETE"])

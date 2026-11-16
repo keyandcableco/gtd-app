@@ -528,6 +528,8 @@ function renderNotes(notes) {
       <div class="meta">${badges.join("")}
         <span class="ctl">
           ${CLAUDE_HERE ? `<a data-act="claude" title="Open a Claude session about this, with it typed in">claude</a>` : ""}
+          ${n.done_at ? "" : `<button data-act="wait" title="${isWaiting(n) ? "Take the waiting mark off"
+            : "Waiting on someone else, no day: no list picks it until you take the mark off"}">${isWaiting(n) ? "not waiting" : "waiting"}</button>`}
           <button data-act="edit">edit</button>
           <button data-act="del">delete</button>
         </span>
@@ -535,6 +537,8 @@ function renderNotes(notes) {
     const link = CLAUDE_HERE && claudeLink(n);
     if (link) card.querySelector('[data-act="claude"]').href = link;
     else if (CLAUDE_HERE) card.querySelector('[data-act="claude"]').remove();
+    const wait = card.querySelector('[data-act="wait"]');
+    if (wait) wait.onclick = () => setWaiting(n, !isWaiting(n), wait);
     card.querySelector('[data-act="edit"]').onclick = () => startEdit(n);
     card.querySelector('[data-act="del"]').onclick = () => delNote(n.id, card);
     card.querySelector(".tick").onchange = e => setDone(n.id, e.target.checked, card, e.target);
@@ -564,6 +568,20 @@ function startEdit(n) {
   el("#clearBtn").style.display = "inline-block";
   window.scrollTo({top:0, behavior:"smooth"});
   el("#body").focus();
+}
+// Waiting on someone else, no day: the tracker puts "waits on someone else"
+// first in the note line (app.py WAITING), which the Today lists pass over.
+function isWaiting(n) { return /^waits on someone else/i.test((n.note || "").trim()); }
+async function setWaiting(n, waiting, btn) {
+  btn.disabled = true;
+  let ok = false;
+  try {
+    ok = (await fetch(`/api/notes/${encodeURIComponent(n.id)}/wait`, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({waiting})})).ok;
+  } catch (e) { ok = false; }
+  btn.disabled = false;
+  if (!ok) { alert("Couldn't save that. Check the connection."); return; }
+  loadNotes();
 }
 // Tick off (or open again): the card leaves this view at once, and comes
 // back with its box as it was if the server says no.

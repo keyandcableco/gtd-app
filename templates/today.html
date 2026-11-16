@@ -150,10 +150,13 @@ function itemEl(n) {
     </div>
     ${CLAUDE_HERE ? `<a class="later claude" title="Open a Claude session about this, with it typed in"
                        aria-label="Ask Claude: ${escapeHtml(n.title)}">Claude</a>` : ""}
-    <button type="button" class="later" aria-label="Put off: ${escapeHtml(n.title)}">Later</button>`;
+    <button type="button" class="later wait" title="Waiting on someone else, no day: off the lists until you take the mark off"
+            aria-label="Waiting on someone else: ${escapeHtml(n.title)}">Waiting</button>
+    <button type="button" class="later put-off" aria-label="Put off: ${escapeHtml(n.title)}">Later</button>`;
   const box = d.querySelector(".tick");
   box.onchange = () => setDone(n.id, box.checked, d, box);
-  d.querySelector("button.later").onclick = () => picker(n, d);
+  d.querySelector(".put-off").onclick = () => picker(n, d);
+  d.querySelector(".wait").onclick = () => takeOff(n, "wait", {note_id: n.id});
   const link = CLAUDE_HERE && claudeLink(n);
   if (link) d.querySelector(".claude").href = link;
   else if (CLAUDE_HERE) d.querySelector(".claude").remove();
@@ -195,25 +198,32 @@ function picker(n, row) {
   row.querySelector(".it").appendChild(p);
   p.querySelector("button").focus();
 }
-async function defer(n, day) {
-  busy++; gen++;
-  const url = `/api/today/${current.day}${current.slot !== "day" ? `/${current.slot}` : ""}/defer`;
+function defer(n, day) { takeOff(n, "defer", {note_id: n.id, on_day: day}); }
+
+// Later and Waiting: the tracker changes the note and puts a stand-in in its spot.
+let taking = false;
+async function takeOff(n, act, body) {
+  if (taking) return;  // one at a time: a second click would find the item gone
+  taking = true; busy++; gen++;
+  const url = `/api/today/${current.day}${current.slot !== "day" ? `/${current.slot}` : ""}/${act}`;
   let res = null, why = "Check the connection.";
   try {
     const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify({note_id: n.id, on_day: day})});
+                                body: JSON.stringify(body)});
     if (r.ok) res = await r.json();
     else why = (await r.json().catch(() => ({}))).error || `The tracker answered ${r.status}.`;
   } catch (e) { res = null; }
-  busy--;
+  busy--; taking = false;
   // the list may have changed under the page (the 4 AM one arrived): the next check redraws it
-  if (!res) { shown = ""; alert(`Couldn't put that off. ${why}`); return; }
+  if (!res) { shown = ""; alert(`Couldn't ${act === "wait" ? "mark that waiting" : "put that off"}. ${why}`); return; }
   shown = JSON.stringify(res.list); render(res.list);
   const notice = el("#notice");
-  notice.textContent = `“${n.title}” comes back ${shortDay(day)}. ` + (res.stand_in
+  notice.textContent = (act === "wait"
+    ? `“${n.title}” is waiting on someone else, with no day (All notes: “not waiting” brings it back). `
+    : `“${n.title}” comes back ${shortDay(body.on_day)}. `) + (res.stand_in
     ? `In its place: ${res.stand_in.body}.` : "Nothing else fit, so the list is one shorter.");
   notice.hidden = false;
-  clearTimeout(defer.t); defer.t = setTimeout(() => { notice.hidden = true; }, 20000);
+  clearTimeout(takeOff.t); takeOff.t = setTimeout(() => { notice.hidden = true; }, 20000);
 }
 
 // Ticks the note itself, so it's ticked in the tracker too.

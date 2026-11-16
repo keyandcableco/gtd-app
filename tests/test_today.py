@@ -165,8 +165,8 @@ class Today(unittest.TestCase):
         self.assertIn(b"Today", r.data)
 
 
-class Defer(unittest.TestCase):
-    """Later: an item put off to a day, and another note in its place."""
+class OnList(unittest.TestCase):
+    """A morning list of two, for Later and Waiting."""
 
     def setUp(self):
         self.c = gtd.app.test_client()
@@ -192,6 +192,10 @@ class Defer(unittest.TestCase):
     def items(self, slot=""):
         res = self.c.get(f"/api/today?day={D0}" + ("&slot=night" if slot else "")).get_json()
         return [(s["key"], i["id"], i["why"]) for s in res["sections"] for i in s["items"]]
+
+
+class Defer(OnList):
+    """Later: an item put off to a day, and another note in its place."""
 
     def test_dated_and_replaced_in_place(self):
         later = self.note("Find out why Google can't index the site", what=["Website"], when_tag="2-Next",
@@ -288,6 +292,55 @@ class Defer(unittest.TestCase):
         self.c.put(f"/api/notes/{self.a}", json={"done": False})
         self.assertEqual(self.items(), [("attention", self.a, "due Nov 18"), ("step", self.b, "CAN-SPAM")])
         self.assertIsNone(next(n for n in self.c.get("/api/notes").get_json() if n["id"] == self.b)["on_day"])
+
+
+class Waiting(OnList):
+    """Waiting: an item waits on someone else, with no day, and another note takes its place."""
+
+    def wait(self, nid, slot="", **kw):
+        return self.c.post(f"/api/today/{D0}{slot}/wait", json={"note_id": nid, **kw})
+
+    def get(self, nid):
+        return next(n for n in self.c.get("/api/notes?done=all").get_json() if n["id"] == nid)
+
+    def test_marked_and_replaced_no_day(self):
+        spare = self.note("Spare", what=["PCBs"], when_tag="2-Next")
+        r = self.wait(self.b)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(r.get_json()["stand_in"]["id"], spare)
+        self.assertEqual(self.items(), [("attention", self.a, "due Nov 18"), ("step", spare, "")])
+        b = self.get(self.b)
+        self.assertEqual((b["note"], b["on_day"]), ("waits on someone else", None))
+        # and no list picks it as a stand-in after
+        self.assertIsNone(self.defer(spare).get_json()["stand_in"])
+
+    def test_keeps_the_note_line_and_comes_back(self):
+        nid = self.note("Ask Shane about the amp", when_tag="2-Next", note="he has the schematic")
+        self.c.put(f"/api/today/{D0}/night", json={"headline": "Quiet.", "items": [{"section": "step", "note_id": nid}]})
+        self.assertEqual(self.wait(nid, slot="/night").status_code, 200)
+        self.assertEqual(self.get(nid)["note"], "waits on someone else; he has the schematic")
+        self.assertEqual(self.wait(nid, slot="/night").status_code, 400)  # off the list now
+        r = self.c.post(f"/api/notes/{nid}/wait", json={"waiting": True})  # again: no second mark
+        self.assertEqual(r.get_json()["note"], "waits on someone else; he has the schematic")
+        r = self.c.post(f"/api/notes/{nid}/wait", json={"waiting": False})
+        self.assertEqual(r.get_json()["note"], "he has the schematic")
+        self.assertEqual(self.c.post(f"/api/notes/{nid}/wait", json={"waiting": False}).get_json()["note"],
+                         "he has the schematic")
+
+    def test_waiting_line(self):
+        w = gtd.waiting_line
+        self.assertEqual(w("", True), "waits on someone else")
+        self.assertEqual(w("waits on someone else", False), "")
+        self.assertEqual(w("step 2 of 3: Wallets (9324ca36)", True), "waits on someone else; step 2 of 3: Wallets (9324ca36)")
+        self.assertEqual(w("waits on the bench test", False), "waits on the bench test")  # not this mark: kept
+
+    def test_refusals(self):
+        self.c.put(f"/api/notes/{self.a}", json={"done": True})
+        self.assertEqual(self.wait(self.a).status_code, 400)  # ticked off
+        self.assertEqual(self.wait("nope").status_code, 400)
+        self.assertEqual(self.c.post(f"/api/notes/{self.b}/wait", json={"waiting": "yes"}).status_code, 400)
+        self.assertEqual(self.c.post("/api/notes/nope/wait", json={"waiting": True}).status_code, 404)
+        self.assertEqual(self.get(self.b)["note"], "")
 
 
 class OnDay(unittest.TestCase):
