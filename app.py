@@ -956,32 +956,42 @@ def note_replies(nid):
     or Haiku writes them (one call, a few seconds) and they're kept. {"title":
     ..., "why": ...} from the list item go with the note's text. 503 without
     Haiku: the page goes on without them."""
-    db = get_db()
-    row = db.execute("SELECT * FROM notes WHERE id=? AND deleted=0", (nid,)).fetchone()
-    if not row:
-        return jsonify({"error": "not found"}), 404
-    have = current_replies(row)
-    if have is not None:
-        return jsonify({"replies": have})
-    if row["done_at"]:
-        return jsonify({"replies": []})
+    if not tagger.available():
+        return jsonify({"error": "no Anthropic API key set"}), 503
     data = request.get_json(silent=True)
     data = data if isinstance(data, dict) else {}
-    n = serialize_note(db, row)
-    lines = [_text(data, "title") or n["body"], n["body"], _text(data, "why"), n["note"],
-             ", ".join(n["what"] + n["who"] + n["where"]), n["details"][:3000]]
-    item = "\n".join(dict.fromkeys(x for x in lines if x))  # each once, in order
-    key = replies_key(row)
-    try:
-        found = tagger.replies(item)
-    except Exception as e:
-        log.warning("Haiku couldn't write replies for %s: %s", nid[:8], e)
-        return jsonify({"error": str(e)[:300] or type(e).__name__}), 503
-    # kept only if the note still reads as it did (an edit meanwhile makes new ones next time)
-    db.execute("UPDATE notes SET replies=?, replies_for=? WHERE id=? AND body=? AND note=? AND details=?",
-               (json.dumps(found), key, nid, row["body"], row["note"], row["details"]))
-    db.commit()
-    return jsonify({"replies": found})
+    db = get_db()
+    # One Haiku call per note at a time: a second tab's ask waits, then finds the first's kept.
+    with _replies_locks_guard:
+        lock = _replies_locks.setdefault(nid, threading.Lock())
+    with lock:
+        row = db.execute("SELECT * FROM notes WHERE id=? AND deleted=0", (nid,)).fetchone()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        have = current_replies(row)
+        if have is not None:
+            return jsonify({"replies": have})
+        if row["done_at"]:
+            return jsonify({"replies": []})
+        n = serialize_note(db, row)
+        lines = [_text(data, "title")[:300] or n["body"], n["body"], _text(data, "why")[:300], n["note"],
+                 ", ".join(n["what"] + n["who"] + n["where"]), n["details"][:3000]]
+        item = "\n".join(dict.fromkeys(x for x in lines if x))  # each once, in order
+        try:
+            found = tagger.replies(item)
+        except Exception as e:
+            # Kept as none, so a note Haiku can't answer isn't asked (and billed) again on
+            # every load; an edit to the note asks afresh.
+            log.warning("Haiku couldn't write replies for %s: %s", nid[:8], e)
+            found = []
+        # kept only if the note still reads as it did (an edit meanwhile makes new ones next time)
+        db.execute("UPDATE notes SET replies=?, replies_for=? WHERE id=? AND body=? AND note=? AND details=?",
+                   (json.dumps(found), replies_key(row), nid, row["body"], row["note"], row["details"]))
+        db.commit()
+        return jsonify({"replies": found})
+
+
+_replies_locks, _replies_locks_guard = {}, threading.Lock()
 
 
 # ---- Waiting: on someone else, with no day ----

@@ -167,7 +167,8 @@ function itemEl(n) {
   if (link) d.querySelector(".claude").href = link;
   else if (CLAUDE_HERE) d.querySelector(".claude").remove();
   if (link && !n.done_at) {
-    if (n.replies) showReplies(d, n, n.replies);
+    const got = n.replies || repliesGot.get(n.id);  // a redraw from a list fetched before they came
+    if (got) showReplies(d, n, got);
     else if (n.replies === null) askReplies(d, n);
   }
   return d;
@@ -176,7 +177,7 @@ function itemEl(n) {
 // Replies: Haiku's likely answers to an item, written once per note and kept
 // by the tracker. Each opens the Claude session with that answer typed in.
 // Asked for one at a time; a tracker without Haiku (503) stops the asking.
-const repliesAsked = new Set();
+const repliesAsked = new Set(), repliesGot = new Map();
 let repliesQueue = Promise.resolve(), repliesOff = false;
 function showReplies(row, n, replies) {
   const it = row.querySelector(".it");
@@ -205,6 +206,7 @@ function askReplies(row, n) {
       if (r.status === 503) { repliesOff = true; return; }
       if (!r.ok) return;
       const res = await r.json();
+      repliesGot.set(n.id, res.replies || []);
       // the row on screen now (a redraw may have replaced it); the next check redraws with them too
       const now = [...document.querySelectorAll(".item")].find(x => x.dataset.id === n.id);
       if (now) showReplies(now, n, res.replies || []);

@@ -354,6 +354,9 @@ class Replies(unittest.TestCase):
 
     def setUp(self):
         self.c = gtd.app.test_client()
+        on = mock.patch.object(gtd.tagger, "available", return_value=True)  # a key, as on the Pi
+        on.start()
+        self.addCleanup(on.stop)
         self.id = self.c.post("/api/notes", json={"body": "Ask Shane about the amp", "note": "he has the schematic",
                                                   "what": ["Repairs"]}).get_json()["id"]
 
@@ -385,10 +388,16 @@ class Replies(unittest.TestCase):
         self.assertIsNone(self.get()["replies"])
 
     def test_without_haiku(self):
-        with mock.patch.object(gtd.tagger, "replies", side_effect=RuntimeError("no Anthropic API key set")):
+        with mock.patch.object(gtd.tagger, "available", return_value=False):
             self.assertEqual(self.ask().status_code, 503)
         self.assertIsNone(self.get()["replies"])
         self.assertEqual(self.c.post("/api/notes/nope/replies", json={}).status_code, 404)
+
+    def test_a_failure_is_kept_as_none(self):
+        with mock.patch.object(gtd.tagger, "replies", side_effect=RuntimeError("Haiku stopped early")) as h:
+            self.assertEqual(self.ask().get_json()["replies"], [])
+            self.assertEqual(self.ask().get_json()["replies"], [])
+        self.assertEqual(h.call_count, 1)  # not asked (and billed) again
 
     def test_tagger_cleans_them(self):
         with mock.patch.object(gtd.tagger, "available", return_value=True), \
