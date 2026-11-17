@@ -1,5 +1,6 @@
 import sqlite3, uuid, os, re, logging, threading, time, hashlib, json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, render_template, g, send_file
 
 import tagger
@@ -725,6 +726,17 @@ SLOT_ORDER = "CASE slot " + " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerat
 DAY_RANGE = 31  # a list more than a month from today is a typo, and would shadow every real one
 
 
+def now_in_words():
+    """Greg's date and part of day, for Haiku's replies: 'Monday, November 16, 2026, evening'."""
+    try:
+        t = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:  # no time-zone data in the image: better no date than a failed ask
+        return ""
+    part = ("night" if t.hour < 4 else "morning" if t.hour < 12 else "afternoon" if t.hour < 17
+            else "evening")
+    return f"{t:%A, %B} {t.day}, {t.year}, {part}"
+
+
 @app.route("/today")
 def today_page():
     return render_template("today.html")
@@ -936,8 +948,12 @@ def _take_off(day, slot, data, set_sql, set_args):
 
 # ---- Replies: Haiku's likely answers to a list item, made once and kept ----
 def replies_key(row):
-    """What the replies were written for: a change to the note's text makes new ones."""
-    return hashlib.sha1("\0".join((row["body"], row["note"], row["details"])).encode()).hexdigest()
+    """What the replies were written for: a change to the note's text, or to how
+    Haiku is asked (REPLIES_VERSION), makes new ones."""
+    return hashlib.sha1("\0".join((REPLIES_VERSION, row["body"], row["note"], row["details"])).encode()).hexdigest()
+
+
+REPLIES_VERSION = "2"  # 2: Haiku is told the date (2026-11-16)
 
 
 def current_replies(row):
@@ -978,7 +994,7 @@ def note_replies(nid):
                  ", ".join(n["what"] + n["who"] + n["where"]), n["details"][:3000]]
         item = "\n".join(dict.fromkeys(x for x in lines if x))  # each once, in order
         try:
-            found = tagger.replies(item)
+            found = tagger.replies(item, now_in_words())
         except Exception as e:
             # Kept as none, so a note Haiku can't answer isn't asked (and billed) again on
             # every load; an edit to the note asks afresh.

@@ -216,14 +216,17 @@ REPLIES_SYSTEM = "\n".join([
     "or dropping it (\"Drop it, not worth it\").",
     "- At most 8 words, plain, in Greg's voice, first person or imperative. Names and part numbers exactly as "
     "in the item. Never invent facts, prices or dates the item doesn't give.",
-    "- Not \"done\", \"later\" or \"waiting on someone\": those have their own buttons.",
+    "- Not \"done\", \"later\", \"set a reminder\" or \"waiting on someone\": those have their own buttons.",
+    "- You're told today's date and the time of day: use them to judge what makes sense (a deadline that has "
+    "passed, a shop that's closed tonight). Answers are kept for days, so never put today's day or date, "
+    "\"today\", \"tonight\" or \"tomorrow\" in one unless the item itself gives that day.",
 ])
 REPLIES_SCHEMA = {"type": "object", "properties": {"replies": {"type": "array", "items": {"type": "string"}}},
                   "required": ["replies"], "additionalProperties": False}
 REPLY_MAX = 80
 
 
-def _ask_replies(item, wait):
+def _ask_replies(item, now, wait):
     import anthropic
     try:
         response = _get_client().with_options(timeout=wait).messages.create(
@@ -231,7 +234,7 @@ def _ask_replies(item, wait):
             max_tokens=1000,
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": REPLIES_SCHEMA}},
             system=REPLIES_SYSTEM,
-            messages=[{"role": "user", "content": f"The item:\n{item}"}],
+            messages=[{"role": "user", "content": f"Now: {now}\n\nThe item:\n{item}"}],
         )
     except anthropic.APIError as e:
         raise RuntimeError(f"{type(e).__name__}: {e}"[:300]) from e
@@ -244,12 +247,12 @@ def _ask_replies(item, wait):
         raise RuntimeError("Haiku's answer wasn't valid JSON") from e
 
 
-def replies(item, wait=35):
+def replies(item, now="", wait=35):
     """Up to 3 short answers Greg might give this item (its text, as one block),
-    or raises RuntimeError like read()."""
+    or raises RuntimeError like read(). now: today's date and time of day, in words."""
     if not available():
         raise RuntimeError("no Anthropic API key set")
-    job = _pool.submit(_ask_replies, item, wait)
+    job = _pool.submit(_ask_replies, item, now or "unknown", wait)
     try:
         answer = job.result(timeout=wait + 5)
     except concurrent.futures.TimeoutError:

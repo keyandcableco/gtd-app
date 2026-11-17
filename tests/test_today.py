@@ -375,6 +375,8 @@ class Replies(unittest.TestCase):
         item = h.call_args[0][0]
         for part in ("Ask Shane", "Ask Shane about the amp", "Friday", "he has the schematic", "Repairs"):
             self.assertIn(part, item)
+        # Haiku is told Greg's date and part of day, New York time
+        self.assertRegex(h.call_args[0][1], r"^[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, 20\d\d, (night|morning|afternoon|evening)$")
         self.assertEqual(self.get()["replies"], ["Text Shane today", "Draft it for me"])
 
     def test_new_ones_after_an_edit(self):
